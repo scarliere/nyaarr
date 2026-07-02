@@ -1,36 +1,79 @@
-# nyaarr
-To create a Sonarr like experience for downloading anime
+# Nyaarr
 
-## Metadata providers
+Nyaarr is a local-first anime library and download manager inspired by Sonarr. It helps you add anime, track missing episodes, search nyaa.si, send safe releases to qBittorrent, and import completed files back into your anime folders.
 
-Add Anime metadata search uses this fallback order:
+> Alpha software: run it on a trusted machine or LAN. Built-in login is planned, but not implemented yet.
 
-1. AniList live GraphQL API
-2. anime-offline-database managed local cache
-3. Kitsu live JSON:API
-4. TMDB live API, only when configured
+## Features
 
-The anime-offline-database fallback is cached automatically in `data/cache/` and checked for updates weekly.
+- **Anime library dashboard** with poster cards, completion counts, airing status, and health notices.
+- **Metadata search** through AniList, anime-offline-database, Kitsu, and optional TMDB fallback.
+- **Root folder import** for existing anime folders, including metadata review for ambiguous matches.
+- **Nyaa.si torrent search** using RSS, release parsing, confidence scoring, and preferred subber support.
+- **qBittorrent integration** with paused safety inspection before downloads are resumed.
+- **Batch support** that selects only wanted episode files and stages imports into the existing anime folder.
+- **Manual selection** for low-confidence releases, no-candidate episodes, and user-supplied Nyaa/torrent/magnet links.
+- **Activity views** for queued, completed, blocked, and flagged torrent decisions.
+- **System status and logs** for disk space, runtime details, uptime, and recent automation events.
 
-To override the managed cache, either:
+## Windows Alpha Install
 
-- Place `anime-offline-database-minified.json` or `anime-offline-database.json` in `data/`
-- Or set `ANIME_OFFLINE_DATABASE_PATH` to the JSON file path
-
-For TMDB fallback, set either `TMDB_BEARER_TOKEN` or `TMDB_API_KEY`.
-
-## ffprobe for media quality tags
-
-Nyaarr uses `ffprobe` to sample one local media file per imported anime folder and tag quality such as `720p` or `1080p`.
-
-Install a repo-local copy:
+From the repository folder, run:
 
 ```powershell
-python scripts\install_ffprobe.py
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer places binaries under `tools/ffmpeg/bin/`, which is ignored by git. Nyaarr resolves `ffprobe` in this order:
+The installer checks for Python 3, installs it with `winget` if missing, creates `.venv`, installs dependencies, attempts to install repo-local `ffprobe`, and creates a **Nyaarr** desktop shortcut.
 
-1. `NYAARR_FFPROBE_PATH`
-2. `tools/ffmpeg/bin/ffprobe.exe`
-3. `ffprobe` on `PATH`
+The shortcut runs `start.ps1`, starts Nyaarr at `http://127.0.0.1:1269`, and opens it in your default browser.
+
+## Manual Run
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python main.py
+```
+
+Then open `http://127.0.0.1:1269`.
+
+## Configuration
+
+Inside the app, configure:
+
+- Anime root folder
+- qBittorrent connection
+- Optional remote path mapping
+- Preferred subbers
+- Display timezone
+
+Optional environment variables:
+
+- `TMDB_BEARER_TOKEN` or `TMDB_API_KEY` for TMDB metadata fallback
+- `ANIME_OFFLINE_DATABASE_PATH` to use a custom offline anime database file
+- `NYAARR_FFPROBE_PATH` to point at a specific `ffprobe` binary
+
+## Data Safety
+
+Nyaarr stores local state under `data/`:
+
+- `data/user/` contains your local anime library and settings
+- `data/cache/` contains metadata caches
+- `data/logs/` contains launcher/runtime logs
+
+These paths are ignored by Git. Do not publish your local `data/user/anime-library.json`; it may contain private paths and download-client settings.
+
+## Development
+
+Run tests with:
+
+```powershell
+python -m pytest
+```
+
+Project notes live in `knowledgebase/`.
+
+## Status
+
+Nyaarr is currently an alpha Flask app. It is best suited for local use while authentication, packaging, backup/restore, and broader deployment hardening are still being built.

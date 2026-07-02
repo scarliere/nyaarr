@@ -214,6 +214,8 @@ data/user/*
 # Nyaarr generated/local runtime assets
 data/image/*
 !data/image/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
 data/**/*.json.tmp
 data/**/*.bak
 data/**/*.db

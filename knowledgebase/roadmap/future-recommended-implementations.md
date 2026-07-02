@@ -33,6 +33,7 @@ Nyaarr is currently suitable as an alpha project for trusted local use. Before b
 
 ## Packaging
 
+- Keep the alpha Windows `install.ps1` and `start.ps1` flow documented: install dependencies into `.venv`, create a desktop shortcut, start Flask on `127.0.0.1:1269`, and open the browser. For beta, consider a signed installer or bundled executable instead of relying on PowerShell execution policy bypass.
 - Add a production run guide with recommended environment variables, reverse proxy notes, and backup paths.
 - Add a Docker or service-manager example after path mapping behavior is stable.
 - Add release checklist notes for tests, ignored local data, and alpha upgrade caveats.
