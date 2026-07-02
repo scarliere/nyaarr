@@ -4138,6 +4138,7 @@ def _apply_resolved_metadata(
             "provider_ids": match.get("provider_ids", {}),
             "manual_verification_required": False,
             "manual_verification_reason": "",
+            "metadata_candidates": [],
             "metadata_resolution_source": resolution_source,
             "metadata_search_titles": search_titles,
         }

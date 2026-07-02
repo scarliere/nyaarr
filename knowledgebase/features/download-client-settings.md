@@ -78,3 +78,5 @@ The qBittorrent form follows the same general Sonarr download-client shape:
 ## Settings Dialog Save
 
 The qBittorrent settings dialog submits with fetch and expects JSON from `/settings/download-client`. On success, the browser follows the returned `redirect_url` back to Settings with the saved message. If the server returns non-JSON, an error, or an auth/login page, the dialog restores the Save button and shows the failure in the dialog status pill instead of staying stuck on `Saving`.
+
+The save handler posts to the form action unless the clicked button explicitly defines `formaction`. This keeps Save on `/settings/download-client` while still allowing Delete to target `/settings/download-client/delete`.

@@ -425,7 +425,8 @@
           button.textContent = button.classList.contains("danger") ? "Deleting" : "Saving";
         }
         try {
-          const response = await fetch(submitter?.formAction || qbittorrentSettings.action, {
+          const action = submitter instanceof HTMLButtonElement && submitter.hasAttribute("formaction") ? submitter.formAction : qbittorrentSettings.action;
+          const response = await fetch(action, {
             method: "POST",
             headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
             body: new FormData(qbittorrentSettings)

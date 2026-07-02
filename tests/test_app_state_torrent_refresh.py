@@ -1668,6 +1668,8 @@ def test_metadata_verification_applies_selected_candidate_and_records_event(monk
     assert message == "Verified metadata for Petals of Reincarnation."
     assert anime["title"] == "Petals of Reincarnation"
     assert anime["manual_verification_required"] is False
+    assert anime["metadata_candidates"] == []
+    assert app_state.metadata_verification_model() == {"items": [], "count": 0}
     assert anime["metadata_resolution_source"] == "manual"
     assert cache_calls and cache_calls[0][1] == selected
     assert database["events"][-1]["category"] == "metadata"

@@ -113,7 +113,7 @@ If a re-scan hits a transient provider failure, Nyaarr does not downgrade an alr
 
 Saving the root folder also seeds the cache from already verified library records before scanning. This protects existing metadata from provider outages and rate limits.
 
-Uncertain matches remain in the library but are flagged in dashboard badges, the Health panel, and Anime > Metadata Review for manual verification. Selecting a candidate applies provider metadata, clears the manual verification flag, refreshes the local completion state, records a metadata event, and queues background torrent search when episodes are missing.
+Uncertain matches remain in the library but are flagged in dashboard badges, the Health panel, and Anime > Metadata Review for manual verification. Selecting a candidate applies provider metadata, clears the manual verification flag and stale candidate list, refreshes the local completion state, records a metadata event, and queues background torrent search when episodes are missing.
 
 ## Current Limitations
 
