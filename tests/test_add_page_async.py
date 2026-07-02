@@ -384,3 +384,30 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
     assert b"anilist-edit-dialog" in response.data
     assert b"Update AniList" not in response.data
 
+
+
+def test_download_client_save_json_returns_redirect(monkeypatch) -> None:
+    saved = []
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", lambda: _sidebar_counts())
+    monkeypatch.setattr(nyaarr, "save_download_client", lambda form: saved.append(dict(form)) or (True, "Download client saved."))
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).post(
+        "/settings/download-client",
+        data={
+            "implementation": "qbittorrent",
+            "name": "qBittorrent",
+            "host": "localhost",
+            "port": "8080",
+            "category": "nyaarr",
+            "enabled": "on",
+        },
+        headers={"Accept": "application/json", "X-Requested-With": "fetch"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload == {"ok": True, "message": "Download client saved.", "redirect_url": "/settings?client_saved=1&client_message=Download+client+saved."}
+    assert saved and saved[0]["implementation"] == "qbittorrent"

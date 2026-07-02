@@ -1,4 +1,4 @@
-﻿# Download Client Settings
+# Download Client Settings
 
 Nyaarr has a settings flow for connecting a torrent download client.
 
@@ -75,3 +75,6 @@ The qBittorrent form follows the same general Sonarr download-client shape:
 - If a completed torrent contains only sample files, unparseable episode files, or episodes outside the wanted set, Nyaarr leaves the queue as completed with `import_status=blocked` so it can be reviewed instead of silently moving the wrong file.
 - qBittorrent `v5.1.4` returned HTTP `404` for `/api/v2/torrents/resume` during the live test. Nyaarr now falls back to `/api/v2/torrents/start` when `/resume` returns `404`.
 
+## Settings Dialog Save
+
+The qBittorrent settings dialog submits with fetch and expects JSON from `/settings/download-client`. On success, the browser follows the returned `redirect_url` back to Settings with the saved message. If the server returns non-JSON, an error, or an auth/login page, the dialog restores the Save button and shows the failure in the dialog status pill instead of staying stuck on `Saving`.

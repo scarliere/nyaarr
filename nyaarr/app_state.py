@@ -652,6 +652,22 @@ def _alternate_poster_metadata(anime: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _enrich_metadata_poster_from_candidates(
+    match_context: dict[str, Any],
+    match: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if _metadata_has_usable_poster(match):
+        return match
+    poster_candidates = [candidate for candidate in candidates if _metadata_has_usable_poster(candidate)]
+    poster_match = _best_metadata_match(match_context, poster_candidates)
+    if poster_match is None:
+        return match
+    enriched = dict(match)
+    enriched["poster"] = str(poster_match.get("poster") or "")
+    enriched["poster_source"] = _metadata_source_name(poster_match)
+    return enriched
+
 def _metadata_has_usable_poster(metadata: Any) -> bool:
     return isinstance(metadata, dict) and bool(str(metadata.get("poster") or "").strip())
 
@@ -4081,6 +4097,8 @@ def _resolve_imported_anime_metadata(item: dict[str, Any], import_title: str) ->
     match = _best_metadata_match(match_context, results)
     item["metadata_candidates"] = _metadata_candidate_preview(results)
     item["metadata_search_titles"] = search_titles
+    if match is not None:
+        match = _enrich_metadata_poster_from_candidates(match_context, match, results)
     if match is None:
         item["manual_verification_required"] = True
         item["manual_verification_reason"] = "No confident metadata match was found for the folder name."
@@ -4112,6 +4130,7 @@ def _apply_resolved_metadata(
             "rating": match["rating"],
             "synopsis": match["synopsis"],
             "poster": match["poster"],
+            "poster_source": match.get("poster_source", _metadata_source_name(match)) if str(match.get("poster") or "").strip() else "",
             "air_date": match.get("air_date", ""),
             "next_airing_at": match.get("next_airing_at", ""),
             "airing_episode": match.get("airing_episode", ""),

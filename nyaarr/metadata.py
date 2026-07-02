@@ -43,40 +43,122 @@ def search_anime_metadata(query: str) -> tuple[list[dict[str, Any]], list[str]]:
         return [], []
 
     notices: list[str] = []
+    merged_results: list[dict[str, Any]] = []
 
     try:
         results = search_anilist(query)
         if results:
-            return results, notices
+            merged_results.extend(results)
+            if _metadata_results_have_poster(results):
+                return _enrich_missing_metadata_posters(merged_results), notices
+            notices.append("AniList returned metadata without posters; checking fallback providers for artwork.")
     except MetadataProviderError as exc:
         notices.append(str(exc))
 
     try:
         results = search_anime_offline_database(query)
         if results:
-            notices.append("AniList returned no usable results; showing anime-offline-database results.")
-            return results, notices
+            merged_results.extend(_new_metadata_results(merged_results, results))
+            if not notices:
+                notices.append("AniList returned no usable results; showing anime-offline-database results.")
+            if _metadata_results_have_poster(results):
+                return _enrich_missing_metadata_posters(merged_results), notices
     except MetadataProviderError as exc:
         notices.append(str(exc))
 
     try:
         results = search_kitsu(query)
         if results:
-            notices.append("AniList and anime-offline-database returned no usable results; showing Kitsu results.")
-            return results, notices
+            merged_results.extend(_new_metadata_results(merged_results, results))
+            if _metadata_results_have_poster(results):
+                return _enrich_missing_metadata_posters(merged_results), notices
+            if not merged_results:
+                notices.append("AniList and anime-offline-database returned no usable results; showing Kitsu results.")
     except MetadataProviderError as exc:
         notices.append(str(exc))
 
     try:
         results = search_tmdb(query)
         if results:
-            notices.append("AniList, anime-offline-database, and Kitsu returned no usable results; showing TMDB results.")
-            return results, notices
+            merged_results.extend(_new_metadata_results(merged_results, results))
+            if not merged_results:
+                notices.append("AniList, anime-offline-database, and Kitsu returned no usable results; showing TMDB results.")
+            return _enrich_missing_metadata_posters(merged_results), notices
     except MetadataProviderError as exc:
         notices.append(str(exc))
 
+    if merged_results:
+        return _enrich_missing_metadata_posters(merged_results), notices
     return [], notices
 
+
+
+
+
+def _enrich_missing_metadata_posters(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched_results: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        enriched = dict(result)
+        if not str(enriched.get("poster") or "").strip():
+            poster_match = _poster_match_for_metadata_result(enriched, results)
+            if poster_match is not None:
+                enriched["poster"] = str(poster_match.get("poster") or "")
+                enriched["poster_source"] = str(poster_match.get("source") or "Unknown")
+        enriched_results.append(enriched)
+    return enriched_results
+
+
+def _poster_match_for_metadata_result(target: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    target_title = _metadata_compare_text(target.get("title") or target.get("original_title"))
+    target_original = _metadata_compare_text(target.get("original_title") or target.get("title"))
+    target_year = str(target.get("year") or "").strip()
+    for candidate in results:
+        if not isinstance(candidate, dict) or candidate is target:
+            continue
+        if not str(candidate.get("poster") or "").strip():
+            continue
+        candidate_title = _metadata_compare_text(candidate.get("title") or candidate.get("original_title"))
+        candidate_original = _metadata_compare_text(candidate.get("original_title") or candidate.get("title"))
+        candidate_year = str(candidate.get("year") or "").strip()
+        titles_match = target_title and target_title in {candidate_title, candidate_original}
+        originals_match = target_original and target_original in {candidate_title, candidate_original}
+        years_match = not target_year or not candidate_year or target_year == "Unknown" or candidate_year == "Unknown" or target_year == candidate_year
+        if years_match and (titles_match or originals_match):
+            return candidate
+    return None
+
+
+def _metadata_compare_text(value: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+def _metadata_results_have_poster(results: list[dict[str, Any]]) -> bool:
+    return any(str(result.get("poster") or "").strip() for result in results if isinstance(result, dict))
+
+
+def _metadata_dedupe_key(result: dict[str, Any]) -> str:
+    provider_ids = result.get("provider_ids")
+    if isinstance(provider_ids, dict):
+        for provider in ("anilist", "mal", "kitsu", "tmdb"):
+            value = provider_ids.get(provider)
+            if value:
+                return f"{provider}:{value}"
+    return f"{result.get('source', '')}:{result.get('title', '')}:{result.get('year', '')}".casefold()
+
+
+def _new_metadata_results(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = {_metadata_dedupe_key(result) for result in existing if isinstance(result, dict)}
+    new_results = []
+    for result in incoming:
+        if not isinstance(result, dict):
+            continue
+        key = _metadata_dedupe_key(result)
+        if key in seen:
+            continue
+        seen.add(key)
+        new_results.append(result)
+    return new_results
 
 ANILIST_MEDIA_FIELDS = """
   id

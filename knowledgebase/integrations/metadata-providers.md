@@ -1,4 +1,4 @@
-﻿# Metadata Providers
+# Metadata Providers
 
 Add Anime metadata search is implemented in `nyaarr/metadata.py`.
 
@@ -156,3 +156,8 @@ Live checks performed:
 - Metadata provider calls are synchronous inside the Flask request.
 
 
+
+
+## Poster Fallbacks
+
+When a primary metadata provider returns a confident anime match without poster artwork, Nyaarr continues checking fallback providers for a matching result with a poster. Metadata search results are enriched before callers receive them, so Add Anime, root-folder import, manual verification, and background metadata refresh can keep the selected provider identity from the best metadata match while using the poster URL and `poster_source` from an equivalent fallback match. This helps fresh client scans resolve artwork for titles whose AniList result temporarily lacks cover art, such as `SANDA`.

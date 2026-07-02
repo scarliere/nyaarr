@@ -2831,3 +2831,44 @@ def test_explicit_season_two_root_title_can_match_season_two_metadata(monkeypatc
     assert item["season_number"] == 2
     assert item["manual_verification_required"] is False
     assert item["provider_ids"] == {"anilist": "sakamoto-s2"}
+
+
+def test_root_import_enriches_missing_poster_from_fallback_metadata_candidate(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "SANDA.S01E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    anilist = root_scan_metadata("SANDA")
+    anilist["source"] = "AniList"
+    anilist["poster"] = ""
+    anilist["provider_ids"] = {"anilist": "sanda-anilist"}
+    kitsu = root_scan_metadata("SANDA")
+    kitsu["source"] = "Kitsu"
+    kitsu["poster"] = "https://kitsu.example/sanda.jpg"
+    kitsu["provider_ids"] = {"kitsu": "sanda-kitsu"}
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [anilist, kitsu])
+
+    item = app_state._imported_anime_item("SANDA", tmp_path, [media_file])
+
+    assert item["provider_ids"] == {"anilist": "sanda-anilist"}
+    assert item["poster"] == "https://kitsu.example/sanda.jpg"
+    assert item["poster_source"] == "Kitsu"
+
+
+def test_search_metadata_keeps_checking_fallbacks_when_anilist_has_no_poster(monkeypatch) -> None:
+    from nyaarr import metadata
+
+    monkeypatch.setattr(metadata, "search_anilist", lambda query: [{"title": "SANDA", "year": "2025", "source": "AniList", "poster": ""}])
+    monkeypatch.setattr(metadata, "search_anime_offline_database", lambda query: [])
+    monkeypatch.setattr(metadata, "search_kitsu", lambda query: [{"title": "SANDA", "year": "2025", "source": "Kitsu", "poster": "https://kitsu.example/sanda.jpg"}])
+    monkeypatch.setattr(metadata, "search_tmdb", lambda query: (_ for _ in ()).throw(AssertionError("TMDB should not run after Kitsu supplies a poster")))
+
+    results, notices = metadata.search_anime_metadata("SANDA")
+
+    assert [result["source"] for result in results] == ["AniList", "Kitsu"]
+    assert results[0]["poster"] == "https://kitsu.example/sanda.jpg"
+    assert results[0]["poster_source"] == "Kitsu"
+    assert results[1]["poster"] == "https://kitsu.example/sanda.jpg"
+    assert any("without posters" in notice for notice in notices)

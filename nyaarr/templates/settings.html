@@ -394,6 +394,26 @@
     }
 
 
+    function setDialogDownloadClientStatus(ok, message) {
+      const status = document.getElementById("dialog-download-client-test-status");
+      if (!status) return;
+      status.classList.remove("idle");
+      status.classList.toggle("failed", !ok);
+      status.lastElementChild.textContent = message;
+    }
+
+    async function jsonOrRedirect(response) {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        return await response.json();
+      }
+      if (response.redirected && response.url) {
+        return { ok: response.ok, redirect_url: response.url };
+      }
+      const text = await response.text();
+      throw new Error(text ? "Server returned a non-JSON response." : "Server returned an empty response.");
+    }
+
     if (qbittorrentSettings) {
       qbittorrentSettings.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -410,9 +430,13 @@
             headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
             body: new FormData(qbittorrentSettings)
           });
-          const result = await response.json();
+          const result = await jsonOrRedirect(response);
+          if (!response.ok || result.ok === false) {
+            throw new Error(result.message || "qBittorrent settings could not be saved.");
+          }
           window.location.href = result.redirect_url || window.location.pathname;
         } catch (error) {
+          setDialogDownloadClientStatus(false, error.message || "Save failed");
           if (button) {
             button.disabled = false;
             button.textContent = originalText;
