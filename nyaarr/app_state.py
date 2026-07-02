@@ -4060,7 +4060,11 @@ def _normalized_status(status: Any) -> str:
 
 
 def _resolve_imported_anime_metadata(item: dict[str, Any], import_title: str) -> dict[str, Any]:
-    match_context = _metadata_match_context(import_title, local_episode_count=_local_episode_count(item))
+    match_context = _metadata_match_context(
+        import_title,
+        local_episode_count=_local_episode_count(item),
+        local_season_number=_local_episode_file_season_hint(item),
+    )
     search_titles = match_context["search_titles"]
     cached_match = _resolved_metadata_cache_lookup(match_context)
     if cached_match is not None:
@@ -4762,11 +4766,23 @@ def _metadata_match_score(match_context: dict[str, Any], result: dict[str, Any])
 def _metadata_episode_count_compatible(match_context: dict[str, Any], metadata: Any) -> bool:
     if not isinstance(metadata, dict):
         return True
+    if not _metadata_season_compatible(match_context, metadata):
+        return False
     local_count = _int_value(match_context.get("local_episode_count"))
     expected_count = _expected_episode_count(metadata)
     if local_count is None or local_count <= 0 or expected_count is None:
         return True
     return local_count <= expected_count
+
+
+def _metadata_season_compatible(match_context: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    result_season = _season_hint_value(metadata.get("season_number"))
+    context_season = _season_hint_value(match_context.get("season_number"))
+    if context_season is not None and result_season is not None:
+        return context_season == result_season
+    if context_season is None and result_season is not None and result_season > 1:
+        return False
+    return True
 
 
 def _provider_score_bonus(result: dict[str, Any]) -> float:
@@ -4891,6 +4907,8 @@ def _cache_entry_matches_context(entry: dict[str, Any], match_context: dict[str,
             return False
         if metadata_season is not None and metadata_season != context_season:
             return False
+    elif metadata_season is not None and metadata_season > 1:
+        return False
     return True
 
 
@@ -4950,18 +4968,56 @@ def _metadata_compare_value(value: Any) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value).casefold()))
 
 
-def _metadata_match_context(import_title: str, *, local_episode_count: int | None = None) -> dict[str, Any]:
+def _metadata_match_context(
+    import_title: str,
+    *,
+    local_episode_count: int | None = None,
+    local_season_number: int | None = None,
+) -> dict[str, Any]:
+    title_season = _season_hint_from_title(import_title)
+    season_number = title_season if title_season is not None else _local_episode_file_season_hint_value(local_season_number)
     return {
         "search_titles": _metadata_search_titles(import_title),
         "year": _year_hint_from_title(import_title),
-        "season_number": _season_hint_from_title(import_title),
+        "season_number": season_number,
+        "season_hint_source": "title" if title_season is not None else ("episode_files" if season_number is not None else ""),
         "local_episode_count": local_episode_count,
     }
+
+
+def _local_episode_file_season_hint(anime: dict[str, Any]) -> int | None:
+    episode_files = anime.get("episode_files")
+    if not isinstance(episode_files, list):
+        return None
+    seasons = {
+        season
+        for season in (_episode_file_season_number(path) for path in episode_files)
+        if season is not None and season > 0
+    }
+    return next(iter(seasons)) if len(seasons) == 1 else None
 
 
 def _year_hint_from_title(value: str) -> int | None:
     match = re.search(r"\b((?:19|20)\d{2})\b", value)
     return int(match.group(1)) if match else None
+
+
+def _local_episode_file_season_hint_value(value: Any) -> int | None:
+    season = _int_value(value)
+    return season if season is not None and season > 0 else None
+
+
+def _episode_file_season_number(value: Any) -> int | None:
+    text = str(value or "")
+    match = re.search(r"\bS(\d{1,2})E\d{1,3}\b", text, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    parts = [part.casefold() for part in re.split(r"[\\/]+", text)]
+    for part in parts:
+        match = re.fullmatch(r"season\s*(\d{1,2})", part.strip(), flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _season_hint_from_title(value: str) -> int | None:

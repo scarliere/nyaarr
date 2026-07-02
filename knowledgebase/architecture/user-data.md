@@ -59,6 +59,10 @@ data/cache/*
 
 Only `data/user/.gitkeep` is committed so the directory exists in fresh clones.
 
+
+## Local Data Cleaner
+
+`clear-local-data.ps1` is a testing utility for resetting a client to a fresh-install state. It stops running Nyaarr Python/tray processes, clears `data/user/`, `data/cache/`, `data/logs/`, and `data/image/`, then recreates `.gitkeep` placeholders. It does not delete code, `.venv`, `tools/`, requirements, or the desktop shortcut. Run with `-Force` to skip the `CLEAN` confirmation prompt on disposable test devices.
 ## Current Limitations
 
 - No multi-user accounts yet.

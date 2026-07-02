@@ -2770,3 +2770,64 @@ def test_root_folder_candidate_scan_reports_top_level_progress(monkeypatch, tmp_
     assert progress["phase"] == "Importing"
     assert progress["total"] == 1
     assert "Found 1 anime candidate" in progress["message"]
+
+
+def test_root_scan_uses_s01_episode_files_to_reject_season_two_metadata(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Sakamoto.Days.S01E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    season_two = root_scan_metadata("Sakamoto Days")
+    season_two["season_number"] = 2
+    season_two["provider_ids"] = {"anilist": "sakamoto-s2"}
+    season_one = root_scan_metadata("Sakamoto Days")
+    season_one["season_number"] = 1
+    season_one["provider_ids"] = {"anilist": "sakamoto-s1"}
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [season_two, season_one])
+
+    item = app_state._imported_anime_item("Sakamoto Days", tmp_path, [media_file])
+
+    assert item["title"] == "Sakamoto Days"
+    assert item["season_number"] == 1
+    assert item["provider_ids"] == {"anilist": "sakamoto-s1"}
+    assert item["metadata_resolution_source"] == "provider"
+
+
+def test_root_scan_without_local_season_hint_does_not_auto_accept_season_two(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Otome.Game.Sekai.E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    season_two = root_scan_metadata("Trapped in a Dating Sim: The World of Otome Games is Tough for Mobs")
+    season_two["season_number"] = 2
+    season_two["provider_ids"] = {"anilist": "otome-s2"}
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [season_two])
+
+    item = app_state._imported_anime_item("Otome Game Sekai wa Mob ni Kibishii Sekai desu", tmp_path, [media_file])
+
+    assert item["season_number"] == 1
+    assert item["manual_verification_required"] is True
+    assert item["manual_verification_reason"] == "No confident metadata match was found for the folder name."
+
+
+def test_explicit_season_two_root_title_can_match_season_two_metadata(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Sakamoto.Days.S02E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    season_two = root_scan_metadata("Sakamoto Days")
+    season_two["season_number"] = 2
+    season_two["provider_ids"] = {"anilist": "sakamoto-s2"}
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [season_two])
+
+    item = app_state._imported_anime_item("Sakamoto Days Season 2", tmp_path, [media_file])
+
+    assert item["season_number"] == 2
+    assert item["manual_verification_required"] is False
+    assert item["provider_ids"] == {"anilist": "sakamoto-s2"}

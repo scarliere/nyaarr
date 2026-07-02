@@ -61,8 +61,17 @@ Nyaarr stores local state under `data/`:
 - `data/user/` contains your local anime library, settings, auth hash, and session secret
 - `data/cache/` contains metadata caches
 - `data/logs/` contains launcher/runtime logs
+- `data/image/` contains generated local shortcut icon assets
 
 These paths are ignored by Git. Do not publish your local `data/user/anime-library.json`; it may contain private paths, download-client settings, and authentication metadata.
+
+For test devices, reset Nyaarr to a fresh-client state with:
+
+```powershell
+.\clear-local-data.ps1
+```
+
+Use `-Force` to skip the confirmation prompt in disposable test environments.
 
 ## Development
 

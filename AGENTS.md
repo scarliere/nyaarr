@@ -14,6 +14,10 @@ Prefer Python-native project structure, tooling, and tests unless the task clear
 - Keep network-facing code isolated behind small clients/adapters so parsing and decision logic can be tested with fixtures.
 - Do not rely on live Sonarr or nyaa.si access for deterministic tests; use local fixtures for API, RSS, HTML, torrent, and magnet examples.
 
+## Local Execution Environment
+
+- On this device, the Windows sandbox helper is not installed. For commands that are likely to require the sandbox helper, use the normal escalation path directly instead of first attempting a sandboxed run that will fail with `codex-windows-sandbox-setup.exe` missing.
+
 ## Knowledgebase
 
 Maintain human-readable implementation notes in `knowledgebase/`.
