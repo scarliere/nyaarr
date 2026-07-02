@@ -1,0 +1,134 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Add Anime{% endblock %}
+
+{% block content %}
+  <section class="add-workspace">
+    <div class="add-header">
+      <div>
+        <p class="eyebrow">Add Anime</p>
+        <h1>Search metadata</h1>
+        <p class="hero-copy">Find anime metadata before monitoring episodes or searching Nyaa releases.</p>
+      </div>
+    </div>
+
+    <form class="metadata-search" action="{{ url_for('add_anime') }}" method="get">
+      <label for="metadata-query">Anime title</label>
+      <div>
+        <input id="metadata-query" name="q" type="search" value="{{ query }}" placeholder="Try Frieren, Dandadan, kaiju, fantasy">
+        <button type="submit">Search</button>
+      </div>
+    </form>
+
+    <div
+      id="metadata-results-shell"
+      data-search-url="{{ url_for('add_anime_search') }}"
+      data-initial-query="{{ query }}"
+      data-initial-status="{{ status_filter }}"
+      data-initial-sort="{{ sort_key }}"
+    >
+      {% if defer_search %}
+        <section class="empty-state loading-state" aria-live="polite">
+          <h2>Searching metadata</h2>
+          <p>Loading results for "{{ query }}".</p>
+        </section>
+      {% else %}
+        {% include "_metadata_results.html" %}
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+
+
+{% block scripts %}
+  <script>
+    const metadataShell = document.getElementById("metadata-results-shell");
+    const metadataSearchForm = document.querySelector(".metadata-search");
+
+    function metadataLoading(query) {
+      return `<section class="empty-state loading-state" aria-live="polite"><h2>Searching metadata</h2><p>Loading results for "${query.replaceAll("<", "&lt;").replaceAll(">", "&gt;")}".</p></section>`;
+    }
+
+    async function loadMetadataResults(params, updateUrl = true) {
+      if (!metadataShell) return;
+      const query = params.get("q") || "";
+      metadataShell.innerHTML = query ? metadataLoading(query) : `<section class="empty-state"><h2>Start with a title</h2><p>Search by anime title, alternate title, or genre to preview metadata results.</p></section>`;
+      if (!query) return;
+      const requestUrl = `${metadataShell.dataset.searchUrl}?${params.toString()}`;
+      if (updateUrl) {
+        window.history.pushState({}, "", `${window.location.pathname}?${params.toString()}`);
+      }
+      try {
+        const response = await fetch(requestUrl, { headers: { "Accept": "application/json", "X-Requested-With": "fetch" } });
+        const result = await response.json();
+        metadataShell.innerHTML = result.html || `<section class="empty-state"><h2>No metadata found</h2><p>Try a different title, romaji title, or genre.</p></section>`;
+      } catch (error) {
+        metadataShell.innerHTML = `<section class="empty-state"><h2>Search failed</h2><p>Metadata search could not finish.</p></section>`;
+      }
+    }
+
+    if (metadataSearchForm && metadataShell) {
+      metadataSearchForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const params = new URLSearchParams(new FormData(metadataSearchForm));
+        params.set("status", "all");
+        params.set("sort", "relevance");
+        await loadMetadataResults(params);
+      });
+
+      metadataShell.addEventListener("change", async (event) => {
+        if (!(event.target instanceof HTMLSelectElement)) return;
+        const form = event.target.closest("form");
+        if (!form || !form.classList.contains("result-tools")) return;
+        const params = new URLSearchParams(new FormData(form));
+        await loadMetadataResults(params);
+      });
+
+      metadataShell.addEventListener("submit", async (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (form.classList.contains("result-tools")) {
+          event.preventDefault();
+          await loadMetadataResults(new URLSearchParams(new FormData(form)));
+          return;
+        }
+        if (!form.classList.contains("add-anime-action")) return;
+        event.preventDefault();
+        const button = form.querySelector("button[type='submit']");
+        if (button) {
+          button.disabled = true;
+          button.textContent = "Adding";
+        }
+        try {
+          const response = await fetch(form.action, {
+            method: "POST",
+            headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+            body: new FormData(form)
+          });
+          const result = await response.json();
+          if (result.redirect_url) {
+            window.location.href = result.redirect_url;
+            return;
+          }
+          if (button) button.textContent = result.ok ? "Added" : "Add failed";
+        } catch (error) {
+          if (button) {
+            button.disabled = false;
+            button.textContent = "Add failed";
+          }
+        }
+      });
+
+      const initialQuery = metadataShell.dataset.initialQuery || "";
+      if (initialQuery) {
+        const params = new URLSearchParams({
+          q: initialQuery,
+          status: metadataShell.dataset.initialStatus || "all",
+          sort: metadataShell.dataset.initialSort || "relevance"
+        });
+        loadMetadataResults(params, false);
+      }
+    }
+  </script>
+{% endblock %}
+

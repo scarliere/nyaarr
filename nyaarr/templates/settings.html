@@ -1,0 +1,403 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Settings{% endblock %}
+
+{% block content %}
+  {% set download_client = settings.download_client|default({}) %}
+  {% set download_client_missing = not download_client.implementation or not download_client.host %}
+  <section class="settings-workspace">
+    <div class="add-header">
+      <div>
+        <p class="eyebrow">Settings</p>
+        <h1>Root folder</h1>
+        <p class="hero-copy">Choose where anime downloads and imported library files should live.</p>
+      </div>
+    </div>
+
+    {% if import_summary %}
+      <div class="settings-alert {% if import_summary.ok %}ok{% else %}warn{% endif %}">
+        <strong>{{ import_summary.message }}</strong>
+        {% if import_summary.ok and import_summary.removed %}
+          <span>{{ import_summary.removed }} root-folder imports removed from the anime list.</span>
+        {% elif import_summary.ok %}
+          <span>{{ import_summary.imported }} imported, {{ import_summary.updated }} updated, {{ import_summary.verified }} AniList verified, {{ import_summary.manual_verification }} need manual verification.</span>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    {% if download_client_summary %}
+      <div class="settings-alert {% if download_client_summary.ok %}ok{% else %}warn{% endif %}">
+        <strong>{{ download_client_summary.message }}</strong>
+      </div>
+    {% endif %}
+
+    {% if display_summary %}
+      <div class="settings-alert {% if display_summary.ok %}ok{% else %}warn{% endif %}">
+        <strong>{{ display_summary.message }}</strong>
+      </div>
+    {% endif %}
+    <section class="settings-panel">
+      <div class="section-heading">
+        <h2>Anime root folder</h2>
+      </div>
+      {% if root_folder_missing %}
+        <div class="settings-section-warning">
+          <span class="section-warning-mark" aria-hidden="true">!</span>
+          <span>- Add a root folder so Nyaarr can read any existing anime you may have and save downloaded ones.</span>
+        </div>
+      {% endif %}
+      <form id="root-folder-form" class="settings-form" action="{{ url_for('update_root_folder') }}" method="post" data-progress-url="{{ url_for('root_folder_progress') }}">
+        <label for="root-folder">Folder path</label>
+        <div class="folder-input-row">
+          <input id="root-folder" name="root_folder" type="text" value="{{ settings.root_folder }}" placeholder="D:\Anime or C:\Users\You\Videos\Anime">
+          {% if settings.root_folder %}
+            <button class="danger" type="submit" formaction="{{ url_for('delete_root_folder_route') }}" formmethod="post">Delete</button>
+          {% endif %}
+          <button id="root-folder-save-button" class="primary" type="submit">Save and scan</button>
+        </div>
+        <p>After saving, Nyaarr scans immediate folders and media files under this root and imports detected anime into the local library.</p>
+        <div id="root-folder-progress" class="root-scan-progress" hidden>
+          <div class="root-scan-progress-heading">
+            <strong data-root-scan-phase>Scanning</strong>
+            <span data-root-scan-count>0 / 0</span>
+          </div>
+          <div class="activity-progress" aria-label="Root folder scan progress">
+            <span data-root-scan-bar style="width: 0%"></span>
+          </div>
+          <p data-root-scan-message>Preparing scan.</p>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-panel">
+      <div class="section-heading">
+        <h2>Display</h2>
+      </div>
+      <form class="settings-form" action="{{ url_for('update_display_settings') }}" method="post">
+        <label for="display-timezone">Timezone</label>
+        <select id="display-timezone" name="timezone">
+          {% for option in settings.timezone_options|default([]) %}
+            <option value="{{ option.value }}" {% if option.value == settings.timezone %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <p>All displayed dates and times use this timezone. Stored metadata stays in UTC.</p>
+        <button class="primary" type="submit">Save display</button>
+      </form>
+    </section>
+    <section class="settings-panel">
+      <div class="section-heading">
+        <h2>Connect Torrent Client</h2>
+        <button class="icon-button" type="button" aria-label="Add torrent client" onclick="document.getElementById('download-client-dialog').showModal()">+</button>
+      </div>
+      {% if download_client_missing %}
+        <div class="settings-section-warning">
+          <span class="section-warning-mark" aria-hidden="true">!</span>
+          <span>- Add your torrent client to allow Nyaarr to start downloading.</span>
+        </div>
+      {% endif %}
+      <div class="settings-summary">
+        {% if download_client.enabled %}
+          <div class="download-client-heading">
+            <strong>{{ download_client.name }}</strong>
+            <span id="download-client-test-status" class="test-status-tag idle" aria-live="polite"><span aria-hidden="true"></span><span>Test success</span></span>
+          </div>
+          <div class="download-client-row">
+            <span>{{ download_client.host }}:{{ download_client.port }} &middot; {{ download_client.category }}</span>
+            <form id="download-client-test-form" action="{{ url_for('test_download_client_route') }}" method="post">
+              <button type="submit">Test Connection</button>
+            </form>
+          </div>
+        {% else %}
+          <strong>No torrent client connected</strong>
+          <span>Add qBittorrent before Nyaarr can send selected releases to a download client.</span>
+        {% endif %}
+      </div>
+    </section>
+
+    <dialog id="download-client-dialog" class="settings-dialog">
+      <form method="dialog" class="dialog-close-form">
+        <button type="submit" aria-label="Close">Close</button>
+      </form>
+      <div class="dialog-heading">
+        <p class="eyebrow">Download client</p>
+        <h2>Add Download Client</h2>
+        <p>Nyaarr currently only supports qBittorrent. Other clients are shown for roadmap visibility.</p>
+      </div>
+
+      <div class="client-picker" aria-label="Torrent client options">
+        <button type="button" class="client-option active" onclick="document.getElementById('qbittorrent-settings').hidden = false">
+          <strong>qBittorrent</strong>
+          <span>Supported</span>
+        </button>
+        <button type="button" class="client-option disabled" disabled>
+          <strong>Transmission</strong>
+          <span>Not supported yet</span>
+        </button>
+        <button type="button" class="client-option disabled" disabled>
+          <strong>Deluge</strong>
+          <span>Not supported yet</span>
+        </button>
+        <button type="button" class="client-option disabled" disabled>
+          <strong>uTorrent</strong>
+          <span>Not supported yet</span>
+        </button>
+      </div>
+
+      <form id="qbittorrent-settings" class="settings-form client-settings-form" action="{{ url_for('update_download_client') }}" method="post" {% if not download_client.implementation %}hidden{% endif %}>
+        <input type="hidden" name="implementation" value="qbittorrent">
+
+        <div class="settings-field-grid">
+          <label>
+            <span>Name</span>
+            <input name="name" type="text" value="{{ download_client.name or 'qBittorrent' }}">
+          </label>
+          <label>
+            <span>Host</span>
+            <input name="host" type="text" value="{{ download_client.host or 'localhost' }}">
+          </label>
+          <label>
+            <span>Port</span>
+            <input name="port" type="number" min="1" max="65535" value="{{ download_client.port or 8080 }}">
+          </label>
+          <label>
+            <span>URL Base</span>
+            <input name="url_base" type="text" value="{{ download_client.url_base }}" placeholder="/qbittorrent">
+          </label>
+          <label>
+            <span>Username</span>
+            <input name="username" type="text" value="{{ download_client.username }}">
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" value="{{ download_client.password }}">
+          </label>
+          <label>
+            <span>Category</span>
+            <input name="category" type="text" value="{{ download_client.category or 'nyaarr' }}">
+          </label>
+          <label>
+            <span>Remote Path</span>
+            <input name="remote_path" type="text" value="{{ download_client.remote_path }}" placeholder="/downloads/anime">
+          </label>
+          <label>
+            <span>Local Path</span>
+            <input name="local_path" type="text" value="{{ download_client.local_path }}" placeholder="D:\Anime">
+          </label>
+          <label>
+            <span>Recent Priority</span>
+            <input name="recent_priority" type="text" value="{{ download_client.recent_priority or 'Last' }}">
+          </label>
+          <label>
+            <span>Older Priority</span>
+            <input name="older_priority" type="text" value="{{ download_client.older_priority or 'Last' }}">
+          </label>
+        </div>
+
+        <div class="settings-checks">
+          <label><input name="enabled" type="checkbox" {% if download_client.enabled or not download_client.implementation %}checked{% endif %}> Enable</label>
+          <label><input name="use_ssl" type="checkbox" {% if download_client.use_ssl %}checked{% endif %}> Use SSL</label>
+          <label><input name="add_paused" type="checkbox" {% if download_client.add_paused %}checked{% endif %}> Add Paused</label>
+          <label><input name="remote_path_mapping_enabled" type="checkbox" {% if download_client.remote_path_mapping_enabled %}checked{% endif %}> Remote Path Mapping</label>
+        </div>
+
+        <p class="settings-disclaimer">Nyaarr stores these settings locally and uses qBittorrent as the only supported download client for now. Remote path mapping translates qBittorrent paths to paths visible to Nyaarr during import.</p>
+        <div class="dialog-actions">
+          <span id="dialog-download-client-test-status" class="test-status-tag idle" aria-live="polite"><span aria-hidden="true"></span><span>Test success</span></span>
+          {% if download_client.implementation %}
+            <button class="danger" type="submit" formaction="{{ url_for('delete_download_client_route') }}" formmethod="post">Delete</button>
+          {% endif %}
+          <button id="dialog-download-client-test-button" type="button" data-test-url="{{ url_for('test_download_client_route') }}">Test Connection</button>
+          <button type="button" onclick="document.getElementById('download-client-dialog').close()">Cancel</button>
+          <button class="primary" type="submit">Save qBittorrent</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
+  <script>
+    const rootFolderForm = document.getElementById("root-folder-form");
+    const rootFolderSaveButton = document.getElementById("root-folder-save-button");
+    const rootFolderProgress = document.getElementById("root-folder-progress");
+
+    function updateRootFolderProgress(progress) {
+      if (!rootFolderProgress || !progress) return;
+      rootFolderProgress.hidden = false;
+      const total = Number(progress.total || 0);
+      const current = Number(progress.current || 0);
+      const percent = Number(progress.percent || 0);
+      rootFolderProgress.querySelector("[data-root-scan-phase]").textContent = progress.phase || "Scanning";
+      rootFolderProgress.querySelector("[data-root-scan-count]").textContent = total ? `${current} / ${total}` : `${current}`;
+      rootFolderProgress.querySelector("[data-root-scan-bar]").style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+      rootFolderProgress.querySelector("[data-root-scan-message]").textContent = progress.message || "Scanning root folder.";
+    }
+
+    async function pollRootFolderProgress() {
+      if (!rootFolderForm) return null;
+      const response = await fetch(rootFolderForm.dataset.progressUrl, { headers: { "Accept": "application/json" } });
+      const progress = await response.json();
+      updateRootFolderProgress(progress);
+      return progress;
+    }
+
+    if (rootFolderForm) {
+      rootFolderForm.addEventListener("submit", async (event) => {
+        const submitter = event.submitter;
+        event.preventDefault();
+        if (submitter && submitter.classList.contains("danger")) {
+          submitter.disabled = true;
+          submitter.textContent = "Deleting";
+          try {
+            const response = await fetch(submitter.formAction || rootFolderForm.action, {
+              method: "POST",
+              headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+              body: new FormData(rootFolderForm)
+            });
+            const result = await response.json();
+            window.location.href = result.redirect_url || window.location.pathname;
+          } catch (error) {
+            submitter.disabled = false;
+            submitter.textContent = "Delete";
+          }
+          return;
+        }
+        if (rootFolderSaveButton) {
+          rootFolderSaveButton.disabled = true;
+          rootFolderSaveButton.textContent = "Scanning";
+        }
+        updateRootFolderProgress({ phase: "Starting", current: 0, total: 0, percent: 0, message: "Preparing root folder scan." });
+        let polling = true;
+        const poller = window.setInterval(async () => {
+          if (!polling) return;
+          try {
+            const progress = await pollRootFolderProgress();
+            if (progress && !progress.active && progress.phase !== "Idle") polling = false;
+          } catch (error) {
+            // Keep the scan request alive; the final response will report failures.
+          }
+        }, 800);
+
+        try {
+          const response = await fetch(rootFolderForm.action, {
+            method: "POST",
+            headers: {
+              "Accept": "application/json",
+              "X-Requested-With": "fetch"
+            },
+            body: new FormData(rootFolderForm)
+          });
+          const result = await response.json();
+          updateRootFolderProgress(result.progress);
+          const summary = result.summary || {};
+          const params = new URLSearchParams({
+            saved: result.ok ? "1" : "0",
+            message: result.message || "Root folder scan finished.",
+            imported: summary.imported || 0,
+            updated: summary.updated || 0,
+            skipped: summary.skipped || 0,
+            verified: summary.verified || 0,
+            manual_verification: summary.manual_verification || 0,
+            removed: 0
+          });
+          window.location.href = `${window.location.pathname}?${params.toString()}`;
+        } catch (error) {
+          updateRootFolderProgress({ phase: "Failed", current: 0, total: 0, percent: 0, message: "Root folder scan failed." });
+        } finally {
+          polling = false;
+          window.clearInterval(poller);
+          if (rootFolderSaveButton) {
+            rootFolderSaveButton.disabled = false;
+            rootFolderSaveButton.textContent = "Save and scan";
+          }
+        }
+      });
+    }
+    async function runDownloadClientTest(button, status, url, body) {
+      button.disabled = true;
+      button.textContent = "Testing";
+      if (status) {
+        status.classList.add("idle");
+        status.classList.remove("failed");
+      }
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "X-Requested-With": "fetch"
+          },
+          body
+        });
+        const result = await response.json();
+        if (status) {
+          status.classList.remove("idle");
+          status.classList.toggle("failed", !result.ok);
+          status.lastElementChild.textContent = result.ok ? "Test success" : result.message;
+        }
+      } catch (error) {
+        if (status) {
+          status.classList.remove("idle");
+          status.classList.add("failed");
+          status.lastElementChild.textContent = "Test failed";
+        }
+      } finally {
+        button.disabled = false;
+        button.textContent = "Test Connection";
+      }
+    }
+
+    const testForm = document.getElementById("download-client-test-form");
+    if (testForm) {
+      testForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = testForm.querySelector("button");
+        const status = document.getElementById("download-client-test-status");
+        await runDownloadClientTest(button, status, testForm.action);
+      });
+    }
+
+    const dialogTestButton = document.getElementById("dialog-download-client-test-button");
+    const qbittorrentSettings = document.getElementById("qbittorrent-settings");
+    if (dialogTestButton && qbittorrentSettings) {
+      dialogTestButton.addEventListener("click", async () => {
+        const status = document.getElementById("dialog-download-client-test-status");
+        await runDownloadClientTest(
+          dialogTestButton,
+          status,
+          dialogTestButton.dataset.testUrl,
+          new FormData(qbittorrentSettings)
+        );
+      });
+    }
+
+
+    if (qbittorrentSettings) {
+      qbittorrentSettings.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitter = event.submitter;
+        const button = submitter instanceof HTMLButtonElement ? submitter : qbittorrentSettings.querySelector("button.primary");
+        const originalText = button ? button.textContent : "";
+        if (button) {
+          button.disabled = true;
+          button.textContent = button.classList.contains("danger") ? "Deleting" : "Saving";
+        }
+        try {
+          const response = await fetch(submitter?.formAction || qbittorrentSettings.action, {
+            method: "POST",
+            headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+            body: new FormData(qbittorrentSettings)
+          });
+          const result = await response.json();
+          window.location.href = result.redirect_url || window.location.pathname;
+        } catch (error) {
+          if (button) {
+            button.disabled = false;
+            button.textContent = originalText;
+          }
+        }
+      });
+    }
+  </script>
+{% endblock %}
+
+
+
+

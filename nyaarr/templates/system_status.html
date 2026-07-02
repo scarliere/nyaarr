@@ -1,0 +1,131 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - System Status{% endblock %}
+
+{% block content %}
+  <section class="settings-workspace system-workspace">
+    <div class="add-header">
+      <div>
+        <p class="eyebrow">System</p>
+        <h1>Status</h1>
+        <p class="hero-copy">Host storage, runtime details, uptime, and project links.</p>
+      </div>
+    </div>
+
+    <section class="settings-panel system-panel">
+      <div class="section-heading">
+        <h2>Disk Space</h2>
+      </div>
+      <div class="system-disk-list">
+        {% if status.disks %}
+          {% for disk in status.disks %}
+            <article class="system-disk-row">
+              <div class="system-disk-heading">
+                <div class="system-disk-title">
+                  <strong>{{ disk.name }}</strong>
+                  {% if disk.is_root_folder_drive %}<span class="system-root-drive-pill">Root Folder's Drive</span>{% endif %}
+                </div>
+                <span>{{ disk.free_label }} free of {{ disk.total_label }}</span>
+              </div>
+              <div class="system-progress" aria-label="{{ disk.name }} {{ disk.used_percent }} percent used">
+                <span class="{{ disk.tone }}" style="width: {{ disk.used_percent }}%"></span>
+              </div>
+              <dl class="system-metric-grid">
+                <div>
+                  <dt>Used</dt>
+                  <dd>{{ disk.used_label }}</dd>
+                </div>
+                <div>
+                  <dt>Free</dt>
+                  <dd>{{ disk.free_label }}</dd>
+                </div>
+                <div>
+                  <dt>Total</dt>
+                  <dd>{{ disk.total_label }}</dd>
+                </div>
+                <div>
+                  <dt>Used %</dt>
+                  <dd>{{ disk.used_percent }}%</dd>
+                </div>
+              </dl>
+            </article>
+          {% endfor %}
+        {% else %}
+          <p class="system-empty">No disk information is available from this host.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="settings-panel system-panel">
+      <div class="section-heading">
+        <h2>About</h2>
+      </div>
+      <dl class="system-about-list">
+        {% for item in status.about %}
+          <div>
+            <dt>{{ item.label }}</dt>
+            <dd>{{ item.value }}</dd>
+          </div>
+        {% endfor %}
+      </dl>
+    </section>
+
+    <section class="settings-panel system-panel">
+      <div class="section-heading">
+        <h2>Uptime</h2>
+      </div>
+      <div class="system-uptime">
+        <strong id="system-uptime-value" data-uptime-seconds="{{ status.uptime.seconds }}">{{ status.uptime.label }}</strong>
+        <span>Started {{ status.uptime.started_at }}</span>
+      </div>
+    </section>
+
+
+    <section class="settings-panel system-panel">
+      <div class="section-heading">
+        <h2>More Info</h2>
+      </div>
+      <div class="system-link-list">
+        {% for link in status.links %}
+          <a href="{{ link.url }}" target="_blank" rel="noreferrer">{{ link.label }}</a>
+        {% endfor %}
+      </div>
+    </section>
+  </section>
+{% endblock %}
+{% block scripts %}
+  <script>
+    const uptimeValue = document.getElementById("system-uptime-value");
+
+    function formatUptime(totalSeconds) {
+      let remaining = Math.max(Math.floor(totalSeconds), 0);
+      const days = Math.floor(remaining / 86400);
+      remaining %= 86400;
+      const hours = Math.floor(remaining / 3600);
+      remaining %= 3600;
+      const minutes = Math.floor(remaining / 60);
+      const seconds = remaining % 60;
+      const parts = [];
+      if (days) {
+        parts.push(`${days}d`);
+      }
+      if (hours || parts.length) {
+        parts.push(`${hours}h`);
+      }
+      if (minutes || parts.length) {
+        parts.push(`${minutes}m`);
+      }
+      parts.push(`${seconds}s`);
+      return parts.join(" ");
+    }
+
+    if (uptimeValue) {
+      let uptimeSeconds = Number(uptimeValue.dataset.uptimeSeconds || 0);
+      window.setInterval(() => {
+        uptimeSeconds += 1;
+        uptimeValue.textContent = formatUptime(uptimeSeconds);
+      }, 1000);
+    }
+  </script>
+{% endblock %}
+

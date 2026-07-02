@@ -1,0 +1,287 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Activity {{ activity.label }}{% endblock %}
+
+{% block content %}
+  <section class="settings-workspace activity-workspace{% if activity.section == 'history' %} activity-workspace-history{% endif %}" data-activity-section="{{ activity.section }}" data-activity-refresh-url="{{ url_for('activity_data', section=activity.section) }}" data-activity-refresh-interval-ms="{% if activity.section == 'queued' %}5000{% else %}0{% endif %}">
+    <div class="add-header">
+      <div>
+        <p class="eyebrow">Activity</p>
+        <h1 data-activity-label>{{ activity.label }}</h1>
+        <p class="hero-copy" data-activity-description>{{ activity.description }}</p>
+      </div>
+    </div>
+
+    <section class="stats-grid" aria-label="Activity summary">
+      <article class="stat-card blue">
+        <span>Queued</span>
+        <strong data-activity-count="queued">{{ activity.counts.queued }}</strong>
+      </article>
+      <article class="stat-card green">
+        <span>History</span>
+        <strong data-activity-count="history">{{ activity.counts.history }}</strong>
+      </article>
+      <article class="stat-card red">
+        <span>Blocked</span>
+        <strong data-activity-count="blocked">{{ activity.counts.blocked }}</strong>
+      </article>
+      <article class="stat-card dark-blue">
+        <span>View</span>
+        <strong data-activity-view>{{ activity.label }}</strong>
+      </article>
+    </section>
+
+    <section class="settings-panel activity-panel">
+      <div class="section-heading">
+        <h2 data-activity-panel-label>{{ activity.label }}</h2>
+      </div>
+      <div class="activity-table-wrap">
+        <table class="activity-table">
+          <thead>
+            <tr>
+              <th>Anime</th>
+              <th>Episode Number</th>
+              <th>Date Added</th>
+              <th>Resolution</th>
+              {% if activity.section != 'history' %}<th>Time Left</th>{% endif %}
+              <th>Progress</th>
+              {% if activity.section == 'history' %}<th>Date Completed</th>{% endif %}
+              {% if activity.section == 'queued' %}<th>Action</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody data-activity-rows>
+            {% for row in activity.rows %}
+              <tr>
+                <td><strong>{{ row.anime }}</strong><span>{{ row.title }}</span></td>
+                <td>{{ row.episode }}</td>
+                <td>{{ row.date_added }}</td>
+                <td>{{ row.resolution }}</td>
+                {% if activity.section != 'history' %}<td>{{ row.time_left }}</td>{% endif %}
+                <td>
+                  <div class="activity-progress-cell">
+                    <div class="activity-progress" aria-label="{{ row.progress }} percent downloaded">
+                      <span style="width: {{ row.progress }}%"></span>
+                    </div>
+                    <em>{{ row.progress }}%</em>
+                  </div>
+                </td>
+                {% if activity.section == 'history' %}<td>{{ row.date_completed }}</td>{% endif %}
+                {% if activity.section == 'queued' %}
+                  <td>
+                    {% if row.can_resolve and row.library_id %}
+                      <div class="activity-actions">
+                        <form action="{{ url_for('allow_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button type="submit">Allow</button></form>
+                        <form action="{{ url_for('reject_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button class="danger" type="submit">Reject</button></form>
+                      </div>
+                    {% endif %}
+                  </td>
+                {% endif %}
+              </tr>
+            {% else %}
+              {% if activity.description == 'Loading activity.' %}
+                <tr>
+                  <td colspan="{% if activity.section == 'queued' %}7{% else %}6{% endif %}" class="activity-empty activity-loading-cell">
+                    <div class="table-loading-card" role="status" aria-live="polite">
+                      <strong>Loading {{ activity.label|lower }} table</strong>
+                      <span>Fetching the latest Activity rows.</span>
+                      <div class="table-loading-lines" aria-hidden="true">
+                        <i class="table-loading-line"></i>
+                        <i class="table-loading-line"></i>
+                        <i class="table-loading-line"></i>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="{% if activity.section == 'queued' %}7{% else %}6{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+      (() => {
+        const workspace = document.querySelector("[data-activity-refresh-url]");
+        const rowsBody = document.querySelector("[data-activity-rows]");
+        if (!workspace || !rowsBody) return;
+
+        const section = workspace.dataset.activitySection || "queued";
+        const refreshUrl = workspace.dataset.activityRefreshUrl;
+        const intervalMs = Number(workspace.dataset.activityRefreshIntervalMs || 0);
+        let inFlight = false;
+        let lastRowsSignature = "";
+
+        function setText(selector, value) {
+          const element = document.querySelector(selector);
+          if (element) element.textContent = value || "";
+        }
+
+        function textCell(value) {
+          const cell = document.createElement("td");
+          cell.textContent = value || "";
+          return cell;
+        }
+
+        function progressCell(value) {
+          const progress = Math.max(0, Math.min(Math.round(Number(value || 0)), 100));
+          const cell = document.createElement("td");
+          const wrapper = document.createElement("div");
+          const bar = document.createElement("div");
+          const fill = document.createElement("span");
+          const label = document.createElement("em");
+          wrapper.className = "activity-progress-cell";
+          bar.className = "activity-progress";
+          bar.setAttribute("aria-label", `${progress} percent downloaded`);
+          fill.style.width = `${progress}%`;
+          label.textContent = `${progress}%`;
+          bar.appendChild(fill);
+          wrapper.appendChild(bar);
+          wrapper.appendChild(label);
+          cell.appendChild(wrapper);
+          return cell;
+        }
+
+        function animeCell(row) {
+          const cell = document.createElement("td");
+          const title = document.createElement("strong");
+          const release = document.createElement("span");
+          title.textContent = row.anime || "Unknown";
+          release.textContent = row.title || "";
+          cell.appendChild(title);
+          cell.appendChild(release);
+          return cell;
+        }
+
+        function actionCell(row) {
+          const cell = document.createElement("td");
+          if (!row.can_resolve || !row.library_id) return cell;
+          const wrapper = document.createElement("div");
+          wrapper.className = "activity-actions";
+          for (const action of ["allow", "reject"]) {
+            const form = document.createElement("form");
+            const input = document.createElement("input");
+            const button = document.createElement("button");
+            form.method = "post";
+            form.action = action === "allow" ? "/torrents/flagged/allow" : "/torrents/flagged/reject";
+            input.type = "hidden";
+            input.name = "library_id";
+            input.value = row.library_id;
+            button.type = "submit";
+            button.textContent = action === "allow" ? "Allow" : "Reject";
+            if (action === "reject") button.className = "danger";
+            form.appendChild(input);
+            form.appendChild(button);
+            wrapper.appendChild(form);
+          }
+          cell.appendChild(wrapper);
+          return cell;
+        }
+
+        function rowKey(row) {
+          return [row.library_id || "", row.title || "", row.episode || "", row.status || ""].join("|");
+        }
+
+        function applyRow(tableRow, row) {
+          tableRow.dataset.rowKey = rowKey(row);
+          const cells = tableRow.children;
+          cells[0].querySelector("strong").textContent = row.anime || "Unknown";
+          cells[0].querySelector("span").textContent = row.title || "";
+          cells[1].textContent = row.episode || "";
+          cells[2].textContent = row.date_added || "";
+          cells[3].textContent = row.resolution || "";
+          let progressCellIndex = 5;
+          if (section === "history") {
+            progressCellIndex = 4;
+            cells[5].textContent = row.date_completed || "";
+          } else {
+            cells[4].textContent = row.time_left || "";
+          }
+          const progress = Math.max(0, Math.min(Math.round(Number(row.progress || 0)), 100));
+          const progressBar = cells[progressCellIndex].querySelector(".activity-progress");
+          const progressFill = cells[progressCellIndex].querySelector(".activity-progress span");
+          const progressLabel = cells[progressCellIndex].querySelector("em");
+          progressBar.setAttribute("aria-label", `${progress} percent downloaded`);
+          progressFill.style.width = `${progress}%`;
+          progressLabel.textContent = `${progress}%`;
+        }
+
+        function buildRow(row) {
+          const tableRow = document.createElement("tr");
+          tableRow.dataset.rowKey = rowKey(row);
+          tableRow.appendChild(animeCell(row));
+          tableRow.appendChild(textCell(row.episode));
+          tableRow.appendChild(textCell(row.date_added));
+          tableRow.appendChild(textCell(row.resolution));
+          if (section !== "history") tableRow.appendChild(textCell(row.time_left));
+          tableRow.appendChild(progressCell(row.progress));
+          if (section === "history") tableRow.appendChild(textCell(row.date_completed));
+          if (section === "queued") tableRow.appendChild(actionCell(row));
+          return tableRow;
+        }
+
+        function renderRows(rows, label) {
+          const signature = JSON.stringify(rows || []);
+          if (signature === lastRowsSignature) return;
+          lastRowsSignature = signature;
+
+          if (!rows.length) {
+            const existingEmpty = rowsBody.querySelector(".activity-empty:not(.activity-loading-cell)");
+            if (existingEmpty) return;
+            const tableRow = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = section === "queued" ? 7 : 6;
+            cell.className = "activity-empty";
+            cell.textContent = `No ${(label || "queued").toLowerCase()} torrents.`;
+            tableRow.appendChild(cell);
+            rowsBody.replaceChildren(tableRow);
+            return;
+          }
+
+          const existingRows = Array.from(rowsBody.querySelectorAll("tr[data-row-key]"));
+          const sameShape = existingRows.length === rows.length && rows.every((row, index) => existingRows[index].dataset.rowKey === rowKey(row));
+          if (sameShape) {
+            rows.forEach((row, index) => applyRow(existingRows[index], row));
+            return;
+          }
+
+          rowsBody.replaceChildren(...rows.map(buildRow));
+        }
+
+        async function refreshActivity() {
+          if (inFlight || document.hidden) return;
+          inFlight = true;
+          try {
+            const response = await fetch(refreshUrl, {
+              headers: {"Accept": "application/json", "X-Requested-With": "fetch"}
+            });
+            if (!response.ok) return;
+            const model = await response.json();
+            setText("[data-activity-label]", model.label);
+            setText("[data-activity-panel-label]", model.label);
+            setText("[data-activity-view]", model.label);
+            setText("[data-activity-description]", model.description);
+            for (const [key, value] of Object.entries(model.counts || {})) {
+              setText(`[data-activity-count="${key}"]`, String(value));
+            }
+            renderRows(model.rows || [], model.label);
+          } finally {
+            inFlight = false;
+          }
+        }
+
+        refreshActivity();
+        if (intervalMs > 0) window.setInterval(refreshActivity, Math.max(intervalMs, 1000));
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) refreshActivity();
+        });
+      })();
+    </script>
+{% endblock %}
+

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Nyaarr{% endblock %}</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/default-icon.png') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/default-icon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  </head>
+  <body>
+    <aside class="sidebar" aria-label="Main navigation">
+      <a class="brand" href="{{ url_for('dashboard') }}">
+        <span class="brand-mark"><img src="{{ url_for('static', filename='img/default-icon.png') }}" alt="" aria-hidden="true"></span>
+        <span>
+          <strong>Nyaarr</strong>
+          <small>Anime automation</small>
+        </span>
+      </a>
+
+      <nav class="nav-list">
+        <details class="nav-group" {% if active_page in ['anime_list', 'anime_manual_selection', 'anime_metadata_verification'] %}open{% endif %}>
+          <summary class="nav-item nav-summary {% if active_page in ['anime_list', 'anime_manual_selection', 'anime_metadata_verification'] %}active{% endif %}">
+            <span>Anime</span>
+            <span class="nav-badges">
+              <b data-sidebar-count="anime" {% if not sidebar_counts.anime %}hidden{% endif %}>{{ sidebar_counts.anime }}</b>
+              <b class="nav-warning-badge" data-sidebar-count="manual_selection" {% if not sidebar_counts.manual_selection %}hidden{% endif %}>{{ sidebar_counts.manual_selection }}</b>
+            </span>
+          </summary>
+          <div class="nav-sublist" aria-label="Anime sections">
+            <a class="nav-subitem {% if active_page == 'anime_list' %}active{% endif %}" href="{{ url_for('dashboard') }}"><span>Anime List</span><b data-sidebar-count="anime" {% if not sidebar_counts.anime %}hidden{% endif %}>{{ sidebar_counts.anime }}</b></a>
+            <a class="nav-subitem {% if active_page == 'anime_manual_selection' %}active{% endif %}" href="{{ url_for('manual_selection') }}"><span>Manual Selection</span><b class="nav-warning-badge" data-sidebar-count="manual_selection" {% if not sidebar_counts.manual_selection %}hidden{% endif %}>{{ sidebar_counts.manual_selection }}</b></a>
+            <a class="nav-subitem {% if active_page == 'anime_metadata_verification' %}active{% endif %}" href="{{ url_for('metadata_verification') }}"><span>Metadata Review</span><b class="nav-warning-badge" data-sidebar-count="metadata_verification" {% if not sidebar_counts.metadata_verification %}hidden{% endif %}>{{ sidebar_counts.metadata_verification }}</b></a>
+          </div>
+        </details>
+        <a class="nav-item {% if active_page == 'calendar' %}active{% endif %}" href="{{ url_for('calendar') }}"><span>Calendar</span></a>
+        <details class="nav-group" {% if active_page in ['activity_queued', 'activity_history', 'activity_blocked'] %}open{% endif %}>
+          <summary class="nav-item nav-summary {% if active_page in ['activity_queued', 'activity_history', 'activity_blocked'] %}active{% endif %}">
+            <span>Activity</span>
+            <b data-sidebar-count="activity" {% if not sidebar_counts.activity %}hidden{% endif %}>{{ sidebar_counts.activity }}</b>
+          </summary>
+          <div class="nav-sublist" aria-label="Activity sections">
+            <a class="nav-subitem {% if active_page == 'activity_queued' %}active{% endif %}" href="{{ url_for('activity', section='queued') }}"><span>Queued</span><b data-sidebar-count="activity" {% if not sidebar_counts.activity %}hidden{% endif %}>{{ sidebar_counts.activity }}</b></a>
+            <a class="nav-subitem {% if active_page == 'activity_history' %}active{% endif %}" href="{{ url_for('activity', section='history') }}"><span>History</span></a>
+            <a class="nav-subitem {% if active_page == 'activity_blocked' %}active{% endif %}" href="{{ url_for('activity', section='blocked') }}"><span>Blocked</span></a>
+          </div>
+        </details>
+        <a class="nav-item {% if active_page == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}">
+          <span>Settings</span>
+          <b id="settings-missing-badge" class="nav-warning-badge" {% if not sidebar_counts.settings_missing %}hidden{% endif %}><span data-settings-missing-count>{{ sidebar_counts.settings_missing }}</span></b>
+        </a>
+        <details class="nav-group" {% if active_page in ['system_status', 'system_logs'] %}open{% endif %}>
+          <summary class="nav-item nav-summary {% if active_page in ['system_status', 'system_logs'] %}active{% endif %}"><span>System</span></summary>
+          <div class="nav-sublist" aria-label="System sections">
+            <a class="nav-subitem {% if active_page == 'system_status' %}active{% endif %}" href="{{ url_for('system_status') }}"><span>Status</span></a>
+            <a class="nav-subitem {% if active_page == 'system_logs' %}active{% endif %}" href="{{ url_for('system_logs') }}"><span>Logs</span><b data-sidebar-count="events" {% if not sidebar_counts.events %}hidden{% endif %}>{{ sidebar_counts.events }}</b></a>
+          </div>
+        </details>
+      </nav>
+    </aside>
+
+    <main class="app-shell"{% if async_data_url %} data-async-page-url="{{ async_data_url }}"{% endif %}>
+      <header class="topbar">
+        <form class="search" action="{{ url_for('add_anime') }}" method="get">
+          <label for="global-search">Search</label>
+          <input id="global-search" name="q" type="search" placeholder="Search anime, releases, groups" value="{{ query|default('') }}">
+        </form>
+        <div class="actions">
+          <a class="button primary" href="{{ url_for('add_anime') }}">Add Anime</a>
+        </div>
+      </header>
+
+      <div id="async-page-content">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+    <script>
+      async function refreshSettingsMissingBadge() {
+        const badge = document.getElementById("settings-missing-badge");
+        if (!badge) {
+          return;
+        }
+        try {
+          const response = await fetch("{{ url_for('settings_status') }}", {
+            headers: {
+              "Accept": "application/json",
+              "X-Requested-With": "fetch"
+            }
+          });
+          const result = await response.json();
+          const count = Number(result.count || 0);
+          const countLabel = badge.querySelector("[data-settings-missing-count]");
+          if (countLabel && countLabel.textContent !== String(count)) {
+            countLabel.textContent = String(count);
+          }
+          if (badge.hidden !== (count === 0)) {
+            badge.hidden = count === 0;
+          }
+        } catch (error) {
+          // Keep the last rendered badge state if the periodic check fails.
+        }
+      }
+
+      async function refreshSidebarCounts() {
+        try {
+          const response = await fetch("{{ url_for('sidebar_counts_data') }}", {
+            headers: {"Accept": "application/json", "X-Requested-With": "fetch"}
+          });
+          if (!response.ok) return;
+          const counts = await response.json();
+          document.querySelectorAll("[data-sidebar-count]").forEach((element) => {
+            const key = element.dataset.sidebarCount;
+            const value = Number(counts[key] || 0);
+            if (element.textContent !== String(value)) {
+              element.textContent = String(value);
+            }
+            if (element.hidden !== (value === 0)) {
+              element.hidden = value === 0;
+            }
+          });
+          const settingsLabel = document.querySelector("[data-settings-missing-count]");
+          const settingsMissing = Number(counts.settings_missing || 0);
+          if (settingsLabel && settingsLabel.textContent !== String(settingsMissing)) settingsLabel.textContent = String(settingsMissing);
+          const settingsBadge = document.getElementById("settings-missing-badge");
+          if (settingsBadge && settingsBadge.hidden !== (settingsMissing === 0)) settingsBadge.hidden = settingsMissing === 0;
+        } catch (error) {
+          // Keep server-rendered zero state if counts cannot be loaded.
+        }
+      }
+
+      async function loadAsyncPageContent() {
+        const shell = document.querySelector("[data-async-page-url]");
+        const target = document.getElementById("async-page-content");
+        if (!shell || !target) return;
+        try {
+          const response = await fetch(shell.dataset.asyncPageUrl, {
+            headers: {"Accept": "text/html", "X-Requested-With": "fetch"}
+          });
+          if (!response.ok) return;
+          const html = await response.text();
+          target.innerHTML = html;
+          target.querySelectorAll("script").forEach((oldScript) => {
+            const script = document.createElement("script");
+            for (const attribute of oldScript.attributes) {
+              script.setAttribute(attribute.name, attribute.value);
+            }
+            script.textContent = oldScript.textContent;
+            oldScript.replaceWith(script);
+          });
+          await refreshSidebarCounts();
+        } catch (error) {
+          target.querySelectorAll("[data-loading-message]").forEach((element) => {
+            element.textContent = "Unable to load data.";
+          });
+        }
+      }
+
+      window.setInterval(refreshSettingsMissingBadge, 600000);
+      window.addEventListener("DOMContentLoaded", () => {
+        refreshSidebarCounts();
+        loadAsyncPageContent();
+      });
+    </script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>
+
+
+
+
+

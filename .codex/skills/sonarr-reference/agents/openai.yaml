@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sonarr Reference"
+  short_description: "Sonarr behavior and integration guidance"
+  default_prompt: "Use $sonarr-reference when working on Sonarr-related code or integration behavior."

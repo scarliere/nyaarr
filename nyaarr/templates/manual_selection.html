@@ -1,0 +1,198 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Manual Selection{% endblock %}
+
+{% block content %}
+  <section class="settings-workspace activity-workspace">
+    <div class="add-header">
+      <div>
+        <p class="eyebrow">Anime</p>
+        <h1>Manual Selection</h1>
+        <p class="hero-copy">Low-confidence torrent candidates waiting for user assignment.</p>
+      </div>
+    </div>
+
+    <section class="stats-grid manual-selection-stats" aria-label="Manual selection summary">
+      <article class="stat-card yellow">
+        <span>Flagged Anime</span>
+        <strong>{{ manual_selection["count"] }}</strong>
+      </article>
+      <article class="stat-card dark-blue">
+        <span>View</span>
+        <strong>Manual</strong>
+      </article>
+    </section>
+
+    {% if selection_message %}
+      <div class="settings-section-warning">
+        <span class="section-warning-mark">!</span>
+        <span>{{ selection_message }}</span>
+      </div>
+    {% endif %}
+
+    {% if loading|default(false) %}
+      <section class="settings-panel activity-panel loading-state manual-selection-panel" data-loading-message>
+        <div class="section-heading"><h2>Loading Manual Selection</h2></div>
+        <div class="activity-table-wrap">
+          <table class="activity-table manual-selection-table">
+            <tbody>
+              <tr>
+                <td colspan="9" class="activity-empty activity-loading-cell">
+                  <div class="table-loading-card" role="status" aria-live="polite">
+                    <strong>Loading manual selection table</strong>
+                    <span>Checking low-confidence torrent candidates.</span>
+                    <div class="table-loading-lines" aria-hidden="true">
+                      <i class="table-loading-line"></i>
+                      <i class="table-loading-line"></i>
+                      <i class="table-loading-line"></i>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% else %}
+    {% for item in manual_selection["items"] %}
+      <section class="settings-panel activity-panel manual-selection-panel">
+        <div class="section-heading manual-selection-heading">
+          <div class="manual-selection-title">
+            <img src="{{ item.poster_url or url_for('static', filename='img/default-icon.png') }}" alt="">
+            <div>
+              <h2>{{ item.title }}</h2>
+              <p>{{ item.reason }}</p>
+              {% if item.best_candidate_title %}<span>{{ item.best_candidate_title }}</span>{% endif %}
+            </div>
+          </div>
+          <b>{{ item.confidence }}%</b>
+        </div>
+        {% if item.can_submit_url and item.candidates %}
+          <form class="manual-selection-action manual-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
+            <input type="hidden" name="library_id" value="{{ item.library_id }}">
+            <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" required>
+            <input name="episode" type="number" min="1" placeholder="Episode">
+            <button type="submit">Submit Link</button>
+          </form>
+        {% endif %}
+        <div class="activity-table-wrap">
+          <table class="activity-table manual-selection-table">
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>Subber</th>
+                <th>Type</th>
+                <th>Episode</th>
+                <th>Size</th>
+                <th>Seeders</th>
+                <th>{% if item.candidates %}Confidence{% else %}Resolution{% endif %}</th>
+                <th>{% if item.candidates %}Link{% else %}Torrent Link{% endif %}</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for candidate in item.candidates %}
+                <tr>
+                  <td><strong>{{ candidate.title }}</strong><span>{{ candidate.confidence_reasons|join(', ') }}</span></td>
+                  <td>{{ candidate.release_group }}</td>
+                  <td>{{ candidate.release_kind }}</td>
+                  <td>{{ candidate.episode or '-' }}</td>
+                  <td>{{ candidate.size }}</td>
+                  <td>{{ candidate.seeders }}</td>
+                  <td>
+                    <div class="activity-progress-cell">
+                      <div class="activity-progress" aria-label="{{ candidate.confidence }} percent confidence"><span style="width: {{ candidate.confidence }}%"></span></div>
+                      <em>{{ candidate.confidence }}%</em>
+                    </div>
+                  </td>
+                  <td>{% if candidate.detail_url %}<a href="{{ candidate.detail_url }}" target="_blank" rel="noreferrer">Open</a>{% else %}-{% endif %}</td>
+                  <td>
+                    <div class="manual-selection-actions">
+                      <form class="manual-selection-action" action="{{ url_for('select_manual_torrent') }}" method="post">
+                        <input type="hidden" name="library_id" value="{{ item.library_id }}">
+                        <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">
+                        <button type="submit">Select</button>
+                      </form>
+                      <form class="manual-selection-action" action="{{ url_for('reject_manual_torrent_route') }}" method="post">
+                        <input type="hidden" name="library_id" value="{{ item.library_id }}">
+                        <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">
+                        <button class="danger" type="submit">Reject</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {% else %}
+                {% for episode in item.needed_episodes %}
+                  <tr>
+                    <td><strong>{{ episode.label }}</strong><span>Manual torrent assignment required.</span></td>
+                    <td>-</td>
+                    <td>episode</td>
+                    <td>{{ episode.episode }}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>{{ episode.resolution }}</td>
+                    <td colspan="2">
+                      <form class="manual-selection-action manual-link-form manual-episode-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
+                        <input type="hidden" name="library_id" value="{{ item.library_id }}">
+                        <input type="hidden" name="episode" value="{{ episode.episode }}">
+                        <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" required>
+                        <button type="submit">Assign</button>
+                      </form>
+                    </td>
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="9" class="activity-empty">No missing episodes need manual assignment.</td>
+                  </tr>
+                {% endfor %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% else %}
+      <section class="settings-panel activity-panel">
+        <div class="section-heading">
+          <h2>Manual Selection</h2>
+        </div>
+        <p class="activity-empty">No anime is waiting for manual torrent selection.</p>
+      </section>
+    {% endfor %}
+    {% endif %}
+  </section>
+{% endblock %}
+
+
+{% block scripts %}
+  <script>
+    document.querySelectorAll(".manual-selection-action").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = form.querySelector("button[type='submit']");
+        const originalText = button ? button.textContent : "";
+        if (button) {
+          button.disabled = true;
+          button.textContent = button.classList.contains("danger") ? "Rejecting" : "Selecting";
+        }
+        try {
+          const response = await fetch(form.action, {
+            method: "POST",
+            headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+            body: new FormData(form)
+          });
+          const result = await response.json();
+          window.location.href = result.redirect_url || window.location.href;
+        } catch (error) {
+          if (button) {
+            button.disabled = false;
+            button.textContent = originalText;
+          }
+        }
+      });
+    });
+  </script>
+{% endblock %}
+
+
+
+

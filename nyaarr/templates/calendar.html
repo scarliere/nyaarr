@@ -1,0 +1,104 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Calendar{% endblock %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <p class="eyebrow">Airing calendar</p>
+      <h1>{{ calendar.period_label }}</h1>
+      <p class="hero-copy">Track saved airing anime by next known air date from metadata providers.</p>
+    </div>
+    <div class="hero-actions">
+      <a class="button" href="{{ url_for('calendar', view=calendar.view, date=calendar.previous_date) }}">Previous</a>
+      <a class="button primary" href="{{ url_for('calendar', view=calendar.view) }}">Today</a>
+      <a class="button" href="{{ url_for('calendar', view=calendar.view, date=calendar.next_date) }}">Next</a>
+    </div>
+  </section>
+
+  <section class="stats-grid" aria-label="Calendar summary">
+    <article class="stat-card blue">
+      <span>Scheduled This View</span>
+      <strong>{{ calendar.scheduled_count }}</strong>
+    </article>
+    <article class="stat-card green">
+      <span>Airing Anime</span>
+      <strong>{{ calendar.airing_count }}</strong>
+    </article>
+    <article class="stat-card yellow">
+      <span>View</span>
+      <strong>{{ calendar.view|title }}</strong>
+    </article>
+    <article class="stat-card blue">
+      <span>Today</span>
+      <strong>{{ calendar.today_label }}</strong>
+    </article>
+  </section>
+
+  <section class="calendar-workspace">
+    <div class="anime-panel">
+      <div class="section-heading">
+        <h2>Air dates</h2>
+        <div class="view-switcher" aria-label="Calendar view">
+          <a class="{% if calendar.view == 'week' %}active{% endif %}" href="{{ url_for('calendar', view='week', date=calendar.anchor_date) }}">Week</a>
+          <a class="{% if calendar.view == 'month' %}active{% endif %}" href="{{ url_for('calendar', view='month', date=calendar.anchor_date) }}">Month</a>
+        </div>
+      </div>
+
+      <div class="calendar-grid {{ calendar.view }}">
+        {% for day in calendar.days %}
+          <article class="calendar-day {% if day.is_today %}today{% endif %} {% if not day.is_current_month %}outside-month{% endif %}">
+            <header>
+              <span>{{ day.day_name }}</span>
+              <strong>{{ day.date_label }}</strong>
+            </header>
+            <div class="calendar-items">
+              {% for item in day.entries %}
+                <article class="calendar-item">
+                  {% if item.poster %}
+                    <img src="{{ item.poster }}" alt="{{ item.title }} poster" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
+                  {% else %}
+                    <div class="calendar-poster-placeholder" aria-hidden="true"></div>
+                  {% endif %}
+                  <div>
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ item.time }} &middot; {{ item.episode }}</span>
+                    <em>{{ item.status }} &middot; {{ item.source }}</em>
+                  </div>
+                </article>
+              {% else %}
+                <p class="calendar-empty">No known air date.</p>
+              {% endfor %}
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+
+      <section class="upcoming-airings">
+        <div class="section-heading compact">
+          <h2>Upcoming airings</h2>
+        </div>
+        <div class="upcoming-airing-list">
+          {% for item in calendar.upcoming_entries %}
+            <article class="calendar-item upcoming">
+              <time datetime="{{ item.date }}">{{ item.date_label }}</time>
+              {% if item.poster %}
+                <img src="{{ item.poster }}" alt="{{ item.title }} poster" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
+              {% else %}
+                <div class="calendar-poster-placeholder" aria-hidden="true"></div>
+              {% endif %}
+              <div>
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.time }} &middot; {{ item.episode }}</span>
+                <em>{{ item.status }} &middot; {{ item.source }}</em>
+              </div>
+            </article>
+          {% else %}
+            <p class="calendar-empty">No upcoming air dates saved yet.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+  </section>
+{% endblock %}
+

@@ -1,0 +1,145 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Metadata Review{% endblock %}
+
+{% block content %}
+  <section class="settings-workspace activity-workspace">
+    <div class="add-header">
+      <div>
+        <p class="eyebrow">Anime</p>
+        <h1>Metadata Review</h1>
+        <p class="hero-copy">Root-folder imports waiting for a metadata match.</p>
+      </div>
+    </div>
+
+    <section class="stats-grid manual-selection-stats" aria-label="Metadata review summary">
+      <article class="stat-card yellow">
+        <span>Needs Review</span>
+        <strong>{{ metadata_verification["count"] }}</strong>
+      </article>
+      <article class="stat-card dark-blue">
+        <span>View</span>
+        <strong>Metadata</strong>
+      </article>
+    </section>
+
+    {% if verification_message %}
+      <div class="settings-section-warning">
+        <span class="section-warning-mark">!</span>
+        <span>{{ verification_message }}</span>
+      </div>
+    {% endif %}
+
+    {% if loading|default(false) %}
+      <section class="settings-panel activity-panel loading-state manual-selection-panel" data-loading-message>
+        <div class="section-heading"><h2>Loading Metadata Review</h2></div>
+        <div class="activity-table-wrap">
+          <table class="activity-table manual-selection-table">
+            <tbody>
+              <tr>
+                <td colspan="6" class="activity-empty activity-loading-cell">
+                  <div class="table-loading-card" role="status" aria-live="polite">
+                    <strong>Loading metadata review table</strong>
+                    <span>Checking root-folder imports that need metadata verification.</span>
+                    <div class="table-loading-lines" aria-hidden="true">
+                      <i class="table-loading-line"></i>
+                      <i class="table-loading-line"></i>
+                      <i class="table-loading-line"></i>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% else %}
+    {% for item in metadata_verification["items"] %}
+      <section class="settings-panel activity-panel manual-selection-panel">
+        <div class="section-heading manual-selection-heading">
+          <div class="manual-selection-title">
+            <img src="{{ item.poster_url or url_for('static', filename='img/default-icon.png') }}" alt="">
+            <div>
+              <h2>{{ item.title }}</h2>
+              <p>{{ item.reason }}</p>
+              <span>{{ item.episode_files }} local file{% if item.episode_files != 1 %}s{% endif %}{% if item.local_path %} - {{ item.local_path }}{% endif %}</span>
+            </div>
+          </div>
+        </div>
+        <div class="activity-table-wrap">
+          <table class="activity-table manual-selection-table">
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>Original Title</th>
+                <th>Year</th>
+                <th>Source</th>
+                <th>Aliases</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for candidate in item.candidates %}
+                <tr>
+                  <td><strong>{{ candidate.title }}</strong></td>
+                  <td>{{ candidate.original_title }}</td>
+                  <td>{{ candidate.year }}</td>
+                  <td>{{ candidate.source }}</td>
+                  <td>{{ candidate.aliases|join(', ') or '-' }}</td>
+                  <td>
+                    <form class="metadata-verification-action" action="{{ url_for('select_metadata_verification') }}" method="post">
+                      <input type="hidden" name="library_id" value="{{ item.library_id }}">
+                      <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">
+                      <button type="submit">Select</button>
+                    </form>
+                  </td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6" class="activity-empty">No metadata candidates are stored for this import. Re-scan the root folder after providers are available.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% else %}
+      <section class="settings-panel activity-panel">
+        <div class="section-heading"><h2>Metadata Review</h2></div>
+        <p class="activity-empty">No root-folder imports need metadata review.</p>
+      </section>
+    {% endfor %}
+    {% endif %}
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    document.querySelectorAll(".metadata-verification-action").forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = form.querySelector("button[type='submit']");
+        const originalText = button ? button.textContent : "";
+        if (button) {
+          button.disabled = true;
+          button.textContent = "Selecting";
+        }
+        try {
+          const response = await fetch(form.action, {
+            method: "POST",
+            headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+            body: new FormData(form)
+          });
+          const result = await response.json();
+          window.location.href = result.redirect_url || window.location.href;
+        } catch (error) {
+          if (button) {
+            button.disabled = false;
+            button.textContent = originalText;
+          }
+        }
+      });
+    });
+  </script>
+{% endblock %}
+
+
+

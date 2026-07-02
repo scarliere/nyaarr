@@ -1,0 +1,141 @@
+    {% if notices %}
+      <div class="notice-list">
+        {% for notice in notices %}
+          <p>{{ notice }}</p>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if query and total_results %}
+      <section class="results-panel">
+        <div class="section-heading">
+          <h2>Results for "{{ query }}"</h2>
+          <form class="result-tools" action="{{ url_for('add_anime') }}" method="get">
+            <input type="hidden" name="q" value="{{ query }}">
+            <label>
+              <span>Filter</span>
+              <select name="status">
+                {% for value, label in status_filters.items() %}
+                  <option value="{{ value }}" {% if value == status_filter %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              <span>Sort</span>
+              <select name="sort">
+                {% for value, label in sort_options.items() %}
+                  <option value="{{ value }}" {% if value == sort_key %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <a class="button" href="{{ url_for('add_anime', q=query) }}">Clear</a>
+          </form>
+        </div>
+        {% if total_results != results|length %}
+          <p class="result-summary">Showing {{ results|length }} of {{ total_results }} results after filters.</p>
+        {% endif %}
+        {% if results %}
+          <div class="metadata-results">
+            {% for anime in results %}
+              <article class="metadata-result">
+                <img src="{{ anime.poster }}" alt="{{ anime.title }} poster" loading="lazy">
+                <div class="metadata-body">
+                  <div class="metadata-title-row">
+                    <div>
+                      <h3>{{ anime.title }}</h3>
+                      <p>{{ anime.original_title }} &middot; {{ anime.year }}</p>
+                    </div>
+                  <span class="rating"><span aria-hidden="true" class="rating-heart">&hearts;</span>{{ anime.rating }}</span>
+                  </div>
+                  <p class="synopsis">{{ anime.synopsis }}</p>
+                  <dl class="metadata-grid">
+                    <div>
+                      <dt>Status</dt>
+                      <dd>{{ anime.status }}</dd>
+                    </div>
+                  <div>
+                    <dt>Episodes</dt>
+                    <dd>{{ anime.episodes }}</dd>
+                  </div>
+                  <div>
+                    <dt>Season</dt>
+                    <dd>{{ anime.season_number }}</dd>
+                  </div>
+                  <div>
+                    <dt>Runtime</dt>
+                    <dd>{{ anime.runtime }}</dd>
+                    </div>
+                    <div>
+                      <dt>Studio</dt>
+                      <dd>{{ anime.studio }}</dd>
+                    </div>
+                    <div>
+                      <dt>Source</dt>
+                      <dd>{{ anime.source }}</dd>
+                    </div>
+                  </dl>
+                  <div class="result-footer">
+                    <div class="badges">
+                      {% for genre in anime.genres %}
+                        <span>{{ genre }}</span>
+                      {% else %}
+                        <span>No genres listed</span>
+                      {% endfor %}
+                    </div>
+                  <form class="add-anime-action" action="{{ url_for('add_anime_to_library_route') }}" method="post">
+                    <input type="hidden" name="library_id" value="{{ anime.source }}:{{ anime.provider_ids.values()|list|first|default(anime.title) }}">
+                    <input type="hidden" name="title" value="{{ anime.title }}">
+                    <input type="hidden" name="original_title" value="{{ anime.original_title }}">
+                    <input type="hidden" name="year" value="{{ anime.year }}">
+                    <input type="hidden" name="status" value="{{ anime.status }}">
+                    <input type="hidden" name="episodes" value="{{ anime.episodes }}">
+                    <input type="hidden" name="season_number" value="{{ anime.season_number }}">
+                    <input type="hidden" name="runtime" value="{{ anime.runtime }}">
+                    <input type="hidden" name="genres" value="{{ anime.genres|join('|') }}">
+                    <input type="hidden" name="studio" value="{{ anime.studio }}">
+                    <input type="hidden" name="source" value="{{ anime.source }}">
+                    <input type="hidden" name="rating" value="{{ anime.rating }}">
+                    <input type="hidden" name="synopsis" value="{{ anime.synopsis }}">
+                    <input type="hidden" name="poster" value="{{ anime.poster }}">
+                    <input type="hidden" name="air_date" value="{{ anime.air_date }}">
+                    <input type="hidden" name="next_airing_at" value="{{ anime.next_airing_at }}">
+                    <input type="hidden" name="airing_episode" value="{{ anime.airing_episode }}">
+                    <input type="hidden" name="airing_source" value="{{ anime.airing_source }}">
+                    <label class="quality-select">
+                      <span>Up to:</span>
+                      <select name="quality_resolution">
+                        <option value="1080p" selected>1080p</option>
+                        <option value="720p">720p</option>
+                        <option value="BD">BD</option>
+                      </select>
+                    </label>
+                    <label class="quality-select nyaa-link-input">
+                      <span>Nyaa link:</span>
+                      <input name="nyaa_link" type="url" placeholder="Optional Nyaa, magnet, or .torrent URL">
+                    </label>
+                    <button type="submit">Add</button>
+                  </form>
+                </div>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="filtered-empty-state">
+            <h3>No results match the current filter</h3>
+            <p>Change the status filter or reset it to all statuses.</p>
+          </div>
+        {% endif %}
+      </section>
+    {% elif query %}
+      <section class="empty-state">
+        <h2>No metadata found</h2>
+        <p>Try a different title, romaji title, or genre.</p>
+      </section>
+    {% else %}
+      <section class="empty-state">
+        <h2>Start with a title</h2>
+        <p>Search by anime title, alternate title, or genre to preview metadata results.</p>
+      </section>
+    {% endif %}
+

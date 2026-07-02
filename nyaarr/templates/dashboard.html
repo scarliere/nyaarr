@@ -1,0 +1,117 @@
+{% extends layout_template|default("base.html") %}
+
+{% block title %}Nyaarr - Anime{% endblock %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <p class="eyebrow">Anime dashboard</p>
+      <h1>Anime library</h1>
+      <p class="hero-copy">Monitor wanted episodes, inspect Nyaa releases, and keep import decisions visible.</p>
+    </div>
+  </section>
+
+  <section class="stats-grid" aria-label="Library summary">
+    {% for item in stats %}
+      <article class="stat-card {{ item.tone }}">
+        <span>{{ item.label }}</span>
+        <strong>{{ item.value }}</strong>
+      </article>
+    {% endfor %}
+  </section>
+
+  <section class="content-grid anime-content-grid">
+    <div class="anime-panel">
+      <div class="section-heading">
+        <h2>Anime</h2>
+      </div>
+
+      {% if loading|default(false) %}
+        <div class="library-empty-state loading-state" data-loading-message>
+          <h3>Loading anime library</h3>
+          <p>Fetching local anime, health, and download state.</p>
+        </div>
+      {% elif anime_cards %}
+        <div class="poster-grid">
+          {% for anime in anime_cards %}
+            <a class="anime-card-link" href="{{ url_for('anime_detail', library_id=anime.library_id) }}">
+              <article class="anime-card">
+              {% if anime.poster %}
+                <img src="{{ anime.poster }}" alt="{{ anime.title }} poster" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
+              {% else %}
+                <div class="poster-placeholder" aria-hidden="true"></div>
+              {% endif %}
+              <div class="progress-track" aria-hidden="true">
+                <span class="{{ anime.completion.progress_tone|default('blue') }}" style="width: {{ anime.completion.progress_percent|default(0) }}%"></span>
+              </div>
+              <div class="anime-meta">
+                <h3>{{ anime.title }}</h3>
+                <p>{{ anime.year }}</p>
+                <div class="badges">
+                  <span
+                    class="{% if anime.library_state == 'Completed' %}badge-ok{% elif anime.library_state == 'Undownloadable' %}badge-undownloadable{% endif %}"
+                    {% if anime.library_state == 'Undownloadable' and anime.undownloadable_reason %}title="{{ anime.undownloadable_reason }}"{% endif %}
+                  >{{ anime.library_state }}</span>
+                  {% if anime.airing_tag and anime.airing_tag != anime.library_state %}
+                    <span class="{{ anime.airing_tag_class }}">{{ anime.airing_tag }}</span>
+                  {% endif %}
+                  {% if not anime.quality_tag %}
+                    <span>{{ anime.quality_profile }}</span>
+                  {% endif %}
+                  {% for tag in anime.media_tags %}
+                    <span>{{ tag }}</span>
+                  {% endfor %}
+                  {% if anime.manual_verification_required %}
+                    <span class="badge-warn">Manual verify</span>
+                  {% endif %}
+                </div>
+                {% if anime.completion and anime.completion.expected_episodes %}
+                  <small class="episode-count-pill">{{ anime.completion.local_episodes }} / {{ anime.completion.progress_target or anime.completion.expected_episodes }} episodes</small>
+                {% endif %}
+                {% if anime.download_queue %}
+                  <small>{{ anime.download_queue.client }}: {{ anime.download_queue.status }}{% if anime.download_queue.progress is defined %} {{ anime.download_queue.progress }}%{% endif %}</small>
+                {% endif %}
+                {% if anime.torrent_search.strategy not in ["Queued for background torrent search", "No torrent search needed"] %}
+                  <small>{{ anime.torrent_search.strategy }}</small>
+                {% endif %}
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="library-empty-state">
+          <h3>No anime added yet</h3>
+          <p>Use Add Anime to search metadata, add a title, and track library progress.</p>
+          <a class="button primary" href="{{ url_for('add_anime') }}">Add Anime</a>
+        </div>
+      {% endif %}
+
+      <section class="anime-health-section">
+        <div class="section-heading compact">
+          <h2>Health</h2>
+        </div>
+        <div class="anime-health-list">
+          {% set health_items = namespace(count=0) %}
+          {% for anime in anime_cards %}
+            {% if anime.manual_verification_required %}
+              {% set health_items.count = health_items.count + 1 %}
+              <p class="health warn">{{ anime.title }}: {{ anime.manual_verification_reason }}</p>
+            {% endif %}
+            {% for notice in anime.torrent_search.notices %}
+              {% if notice and notice not in ["Torrent search will run in the background maintenance worker.", "Anime is complete in the configured root folder."] %}
+                {% set health_items.count = health_items.count + 1 %}
+                <p class="health warn">{{ anime.title }}: {{ notice }}</p>
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {% if health_items.count == 0 %}
+            <p class="health ok">Ready to search AniList and nyaa.si RSS.</p>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+  </section>
+{% endblock %}
+
+
+

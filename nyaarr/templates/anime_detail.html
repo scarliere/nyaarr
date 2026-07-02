@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Nyaarr - {{ anime.title }}{% endblock %}
+
+{% block content %}
+  <section class="anime-detail-workspace">
+    <div class="anime-detail-hero">
+      <div class="anime-detail-poster">
+        {% if anime.poster %}
+          <img src="{{ anime.poster }}" alt="{{ anime.title }} poster" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
+        {% else %}
+          <div class="poster-placeholder" aria-hidden="true"></div>
+        {% endif %}
+      </div>
+      <div class="anime-detail-summary">
+        <p class="eyebrow">Anime</p>
+        <div class="anime-detail-title-row">
+          <h1>{{ anime.title }}</h1>
+          <button class="icon-button anime-detail-edit-button" type="button" title="Edit AniList ID" aria-label="Edit AniList ID" onclick="document.getElementById('anilist-edit-dialog').showModal()">
+            <span aria-hidden="true">&#9881;</span>
+          </button>
+        </div>
+        {% if anime.original_title and anime.original_title != anime.title %}<p class="anime-detail-original">{{ anime.original_title }}</p>{% endif %}
+        <div class="badges anime-detail-badges">
+          <span class="{% if anime.library_state == 'Completed' %}badge-ok{% elif anime.library_state == 'Undownloadable' %}badge-undownloadable{% endif %}">{{ anime.library_state }}</span>
+          <span>{{ anime.status }}</span>
+          <span>{{ anime.quality_profile }}</span>
+          {% for genre in anime.genres[:4] %}<span>{{ genre }}</span>{% endfor %}
+        </div>
+        {% if anime.synopsis %}
+          <p class="anime-detail-synopsis">{{ anime.synopsis }}</p>
+        {% else %}
+          <p class="anime-detail-synopsis muted">No synopsis is stored for this anime yet.</p>
+        {% endif %}
+        <dl class="anime-detail-facts">
+          <div><dt>Year</dt><dd>{{ anime.year }}</dd></div>
+          <div><dt>Air Date</dt><dd>{{ anime.air_date }}</dd></div>
+          <div><dt>Runtime</dt><dd>{{ anime.runtime }}</dd></div>
+          <div><dt>Studio</dt><dd>{{ anime.studio }}</dd></div>
+          <div><dt>Rating</dt><dd>{{ anime.rating }}</dd></div>
+          <div><dt>Source</dt><dd>{{ anime.source }}</dd></div>
+          <div><dt>AniList ID</dt><dd>{{ anime.anilist_id or 'Not set' }}</dd></div>
+        </dl>
+        {% if anilist_summary %}
+          <div class="settings-alert {% if anilist_summary.ok %}ok{% else %}warn{% endif %}">
+            <strong>{{ anilist_summary.message }}</strong>
+          </div>
+        {% endif %}
+        <dialog id="anilist-edit-dialog" class="settings-dialog anime-edit-dialog">
+          <form class="settings-form anime-anilist-form" action="{{ url_for('update_anime_anilist_id', library_id=anime.library_id) }}" method="post">
+            <div class="section-heading compact">
+              <div>
+                <h2>Edit AniList ID</h2>
+                <p>Use this when a folder import matched the wrong anime or movie entry.</p>
+              </div>
+              <button class="icon-button" type="button" title="Close" aria-label="Close" onclick="document.getElementById('anilist-edit-dialog').close()">&times;</button>
+            </div>
+            <label for="anilist-id">AniList ID</label>
+            <div class="folder-input-row">
+              <input id="anilist-id" name="anilist_id" type="number" min="1" step="1" value="{{ anime.anilist_id }}" placeholder="179950">
+              <button class="primary" type="submit">Update</button>
+            </div>
+          </form>
+        </dialog>
+      </div>
+    </div>
+
+    <section class="anime-detail-panel">
+      <div class="section-heading">
+        <div>
+          <h2>Episodes</h2>
+          {% if anime.completion.expected_episodes %}
+            <p>{{ anime.completion.local_episodes }} of {{ anime.completion.progress_target or anime.completion.expected_episodes }} available</p>
+          {% endif %}
+        </div>
+      </div>
+      {% if anime.episodes %}
+        <div class="activity-table-wrap">
+          <table class="activity-table anime-episode-table">
+            <thead>
+              <tr>
+                <th>Episode</th>
+                <th>Title</th>
+                <th>Air Date</th>
+                <th>Status</th>
+                <th>Quality</th>
+                <th>File</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for episode in anime.episodes %}
+                <tr>
+                  <td><strong>{{ episode.label }}</strong></td>
+                  <td>{{ episode.title }}</td>
+                  <td>{{ episode.air_date }}</td>
+                  <td>
+                    <span class="episode-state {{ episode.tone }}">{{ episode.status }}{% if episode.progress is not none and episode.status not in ['Downloaded', 'Imported'] %} {{ episode.progress }}%{% endif %}</span>
+                  </td>
+                  <td>{{ episode.quality }}</td>
+                  <td>{% if episode.file %}<span title="{{ episode.path }}">{{ episode.file }}</span>{% else %}-{% endif %}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="activity-empty anime-detail-empty">No episode count is stored for this anime yet.</p>
+      {% endif %}
+    </section>
+  </section>
+{% endblock %}
+

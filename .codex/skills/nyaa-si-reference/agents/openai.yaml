@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nyaa.si Reference"
+  short_description: "Nyaa.si search, RSS, torrent metadata guidance"
+  default_prompt: "Use $nyaa-si-reference when working on nyaa.si search, RSS, metadata extraction, or torrent downloads."

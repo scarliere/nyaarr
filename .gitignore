@@ -203,6 +203,30 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Nyaarr local metadata caches
+data/cache/*
+!data/cache/.gitkeep
+
+# Nyaarr client-local user database
+data/user/*
+!data/user/.gitkeep
+
+# Nyaarr generated/local runtime assets
+data/image/*
+!data/image/.gitkeep
+data/**/*.json.tmp
+data/**/*.bak
+data/**/*.db
+data/**/*.sqlite
+data/**/*.sqlite3
+*.torrent
+*.magnet
+*.part
+*.tmp
+
+# Nyaarr local tool installs
+tools/ffmpeg/
+
 # Ruff stuff:
 .ruff_cache/
 
