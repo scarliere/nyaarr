@@ -72,7 +72,8 @@ function Start-NyaarrTray {
     }
 
     try {
-        Start-Process -FilePath $trayPython -ArgumentList @($TrayScript, "--pid", [string]$NyaarrProcessId, "--url", $BrowserUrl, "--project-root", $ProjectRoot) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $TrayOutLog -RedirectStandardError $TrayErrLog | Out-Null
+        $trayArguments = @("`"$TrayScript`"", "--pid", [string]$NyaarrProcessId, "--url", "`"$BrowserUrl`"", "--project-root", "`"$ProjectRoot`"")
+        Start-Process -FilePath $trayPython -ArgumentList $trayArguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $TrayOutLog -RedirectStandardError $TrayErrLog | Out-Null
     } catch {
         Write-Host "Unable to start tray icon: $($_.Exception.Message)" -ForegroundColor Yellow
     }
@@ -147,7 +148,8 @@ $env:NYAARR_HOST = $HostName
 $env:NYAARR_PORT = [string]$Port
 $env:NYAARR_DEBUG = if ($env:NYAARR_DEBUG) { $env:NYAARR_DEBUG } else { "0" }
 
-$process = Start-Process -FilePath $VenvPython -ArgumentList @($MainScript) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog -PassThru
+$mainArguments = @("`"$MainScript`"")
+$process = Start-Process -FilePath $VenvPython -ArgumentList $mainArguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $StdoutLog -RedirectStandardError $StderrLog -PassThru
 
 $started = $false
 for ($attempt = 0; $attempt -lt 45; $attempt++) {
