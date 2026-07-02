@@ -50,6 +50,50 @@ def test_completed_anime_does_not_refresh_torrent_search() -> None:
     assert app_state._should_refresh_torrent_search(anime, 9999999999) is False
 
 
+
+def test_add_anime_queues_torrent_search_without_inline_external_work(monkeypatch) -> None:
+    database = {"settings": {"root_folder": ""}, "anime": [], "events": []}
+    writes = []
+    calls = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_refresh_torrent_search", lambda *args, **kwargs: calls.append("refresh"))
+    monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", lambda *args, **kwargs: calls.append("dispatch"))
+
+    added = app_state.add_anime_to_library(
+        {"library_id": "anime-new", "title": "Async Add", "episodes": "12", "season_number": 1},
+        {"query": "Async Add", "strategy": "initial", "candidates": [], "notices": []},
+    )
+
+    assert added["torrent_search"]["strategy"] == "Queued for background torrent search"
+    assert "checked_at" not in added["torrent_search"]
+    assert calls == []
+    assert writes == [database]
+
+
+def test_add_anime_with_supplied_torrent_queues_candidate_without_inline_dispatch(monkeypatch) -> None:
+    database = {"settings": {"root_folder": "C:/Anime", "torrent_confidence_threshold": 70}, "anime": [], "events": []}
+    writes = []
+    calls = []
+    magnet = "magnet:?xt=urn:btih:ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", lambda *args, **kwargs: calls.append("dispatch"))
+
+    added = app_state.add_anime_to_library(
+        {"library_id": "anime-new", "title": "Async Add", "episodes": "12", "season_number": 1},
+        {"query": "Async Add", "strategy": "initial", "candidates": [], "notices": []},
+        magnet,
+    )
+
+    assert added["torrent_search"]["strategy"] == "User supplied Nyaa torrent link queued for background dispatch"
+    assert added["torrent_search"]["candidates"][0]["torrent_url"] == magnet
+    assert added["torrent_search"]["checked_at"]
+    assert calls == []
+    assert writes == [database]
+
 def manual_candidate(infohash: str = "candidate-1") -> dict[str, object]:
     return {
         "title": "[SteadySubs] Petals of Reincarnation - 05 [1080p]",
@@ -941,8 +985,23 @@ def test_activity_queued_rows_do_not_mark_download_client_episode_as_wanted(monk
     client = FakeDownloadClient([{"hash": "external-3", "name": "Petals of Reincarnation S01E03 1080p WEB-DL.mkv"}])
     monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
 
-    assert app_state._activity_queued_rows(database) == []
+    assert app_state._activity_queued_rows(database, include_client_snapshot=True) == []
 
+
+
+def test_activity_model_does_not_refresh_download_client_on_page_load(monkeypatch) -> None:
+    database = auto_dispatch_database([])
+    writes = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_refresh_download_queue", lambda db: (_ for _ in ()).throw(AssertionError("page load refreshed qBittorrent")))
+    monkeypatch.setattr(app_state, "_download_client_existing_snapshot", lambda db: (_ for _ in ()).throw(AssertionError("page load read qBittorrent snapshot")))
+
+    model = app_state.activity_model("queued")
+
+    assert model["section"] == "queued"
+    assert writes == []
 
 def test_activity_queued_rows_include_missing_episodes_without_selected_torrent() -> None:
     database = auto_dispatch_database([])
@@ -2228,6 +2287,7 @@ def test_manual_selection_model_shows_no_candidate_intervention(monkeypatch) -> 
 
 
 def test_manual_selection_data_page_lists_needed_episode_assignment_rows(monkeypatch) -> None:
+    import nyaarr
     from nyaarr import create_app
 
     database = manual_database()
@@ -2241,8 +2301,17 @@ def test_manual_selection_data_page_lists_needed_episode_assignment_rows(monkeyp
     }
     monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
     monkeypatch.setattr(app_state, "_write_user_database", lambda db: None)
+    monkeypatch.setattr(nyaarr, "has_superadmin_account", lambda: True)
+    monkeypatch.setattr(nyaarr, "load_or_create_session_secret", lambda: "test-secret")
+    monkeypatch.setattr(nyaarr, "_session_is_authenticated", lambda: True)
 
-    response = create_app().test_client().get("/anime/manual-selection/data-page")
+    app = create_app()
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["superadmin_authenticated"] = True
+        session["superadmin_username"] = "admin"
+    response = client.get("/anime/manual-selection/data-page")
     html = response.get_data(as_text=True)
 
     assert response.status_code == 200

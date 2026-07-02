@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import threading
 from typing import Any
 
 import pytest
@@ -109,6 +110,7 @@ def test_find_torrents_loads_episode_searches_before_selection(monkeypatch: pyte
         episode = int(query.rsplit(" ", 1)[1])
         return [release("SteadySubs", episode, seeders=30)]
 
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
     monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
 
     result = torrent_finder.find_torrents_for_anime(anime())
@@ -124,6 +126,50 @@ def test_find_torrents_loads_episode_searches_before_selection(monkeypatch: pyte
     assert [candidate["episode"] for candidate in result["candidates"]] == [1, 2, 3, 4, 5]
     assert "Loaded 4 episode-specific RSS candidate(s) before selection." in result["notices"]
 
+
+
+def test_large_backlog_tries_batch_before_episode_fanout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    item = anime(progress_target=12)
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        calls.append(query)
+        if query == "Petals of Reincarnation":
+            return []
+        if query == "Petals of Reincarnation batch":
+            return [batch_release("SteadySubs", seeders=40)]
+        if query == "Petals of Reincarnation complete":
+            return []
+        raise AssertionError(f"episode fan-out should have been skipped: {query}")
+
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
+    monkeypatch.setattr(torrent_finder, "LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD", 6)
+    monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
+
+    result = torrent_finder.find_torrents_for_anime(item)
+
+    assert calls == ["Petals of Reincarnation", "Petals of Reincarnation batch", "Petals of Reincarnation complete"]
+    assert result["candidates"][0]["release_kind"] == "batch"
+    assert "Skipped episode-specific RSS fan-out because a compatible batch candidate was found." in result["notices"]
+
+
+def test_episode_search_queries_use_parallel_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    thread_names = []
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        if query == "Petals of Reincarnation":
+            return []
+        thread_names.append(threading.current_thread().name)
+        episode = int(query.rsplit(" ", 1)[1])
+        return [release("SteadySubs", episode, seeders=30)]
+
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 3)
+    monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
+
+    result = torrent_finder.find_torrents_for_anime(anime(progress_target=4))
+
+    assert [candidate["episode"] for candidate in result["candidates"]] == [1, 2, 3, 4]
+    assert any(name.startswith("nyaa-rss") for name in thread_names)
 
 def test_dispatch_release_selection_skips_episode_candidates_that_are_no_longer_missing() -> None:
     database = {"settings": {"torrent_confidence_threshold": 0, "preferred_subbers": []}, "ignored_torrents": []}
@@ -179,6 +225,7 @@ def test_find_torrents_uses_successful_alternate_title_for_episode_searches(monk
         candidate["title"] = f"[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - {episode:02d} [1080p]"
         return [candidate]
 
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
     monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
 
     result = torrent_finder.find_torrents_for_anime(anime_item)
@@ -229,6 +276,7 @@ def test_find_torrents_continues_alias_search_for_existing_local_subber(monkeypa
         candidate["title"] = f"[SubsPlease] Shibou Yuugi de Meshi wo Kuu. - {episode:02d} (1080p)"
         return [candidate]
 
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
     monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
 
     result = torrent_finder.find_torrents_for_anime(anime_item)
@@ -423,6 +471,7 @@ def test_find_torrents_loads_same_subber_batch_fallback_searches(monkeypatch: py
             return [batch_release("SteadySubs", seeders=50)]
         return []
 
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
     monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
 
     result = torrent_finder.find_torrents_for_anime(item)

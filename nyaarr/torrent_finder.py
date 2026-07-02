@@ -1,7 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import concurrent.futures
 import os
 import re
+import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -13,7 +16,12 @@ from typing import Any
 
 NYAA_RSS_URL = "https://nyaa.si/"
 NYAA_NAMESPACE = "{https://nyaa.si/xmlns/nyaa}"
-HTTP_TIMEOUT_SECONDS = 15
+HTTP_TIMEOUT_SECONDS = float(os.environ.get("NYAARR_NYAA_HTTP_TIMEOUT_SECONDS", "8"))
+NYAA_RSS_SEARCH_WORKERS = max(1, int(os.environ.get("NYAARR_NYAA_RSS_SEARCH_WORKERS", "8")))
+NYAA_RSS_CACHE_TTL_SECONDS = int(os.environ.get("NYAARR_NYAA_RSS_CACHE_TTL_SECONDS", "300"))
+LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD = int(os.environ.get("NYAARR_LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD", "6"))
+_RSS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_RSS_CACHE_LOCK = threading.Lock()
 LOW_SEED_BATCH_FALLBACK_SEEDERS = int(os.environ.get("NYAARR_LOW_SEED_BATCH_FALLBACK_SEEDERS", "3"))
 STALLED_TORRENT_BATCH_FALLBACK_SECONDS = int(os.environ.get("NYAARR_STALLED_TORRENT_BATCH_FALLBACK_SECONDS", str(6 * 60 * 60)))
 
@@ -91,17 +99,32 @@ def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
 
     missing_episodes = _missing_episodes(anime)
     if missing_episodes:
-        before_count = len(related_releases)
-        related_releases = _load_episode_search_releases(
-            matched_search_title,
-            season_number,
-            related_releases,
-            missing_episodes,
-            notices,
-        )
-        added_count = len(related_releases) - before_count
-        if added_count:
-            notices.append(f"Loaded {added_count} episode-specific RSS candidate(s) before selection.")
+        if _should_try_large_backlog_batch_search(anime, related_releases, missing_episodes):
+            before_batch_count = len(related_releases)
+            related_releases = _load_batch_search_releases(
+                matched_search_title,
+                season_number,
+                related_releases,
+                preferred_group,
+                notices,
+            )
+            added_batch_count = len(related_releases) - before_batch_count
+            if added_batch_count:
+                notices.append(f"Loaded {added_batch_count} upfront batch RSS candidate(s) before episode search.")
+        if not _has_compatible_batch_candidate(anime, related_releases):
+            before_count = len(related_releases)
+            related_releases = _load_episode_search_releases(
+                matched_search_title,
+                season_number,
+                related_releases,
+                missing_episodes,
+                notices,
+            )
+            added_count = len(related_releases) - before_count
+            if added_count:
+                notices.append(f"Loaded {added_count} episode-specific RSS candidate(s) before selection.")
+        else:
+            notices.append("Skipped episode-specific RSS fan-out because a compatible batch candidate was found.")
         if _should_load_batch_fallback_searches(anime, related_releases, missing_episodes):
             before_batch_count = len(related_releases)
             related_releases = _load_batch_search_releases(
@@ -144,6 +167,22 @@ def _search_titles(anime: dict[str, Any]) -> list[str]:
 
 
 def search_nyaa_rss(query: str) -> list[dict[str, Any]]:
+    cache_key = query.strip().casefold()
+    now = time.time()
+    if NYAA_RSS_CACHE_TTL_SECONDS > 0:
+        with _RSS_CACHE_LOCK:
+            cached = _RSS_CACHE.get(cache_key)
+            if cached is not None and now - cached[0] < NYAA_RSS_CACHE_TTL_SECONDS:
+                return [dict(release) for release in cached[1]]
+
+    releases = _fetch_nyaa_rss(query)
+    if NYAA_RSS_CACHE_TTL_SECONDS > 0:
+        with _RSS_CACHE_LOCK:
+            _RSS_CACHE[cache_key] = (now, [dict(release) for release in releases])
+    return [dict(release) for release in releases]
+
+
+def _fetch_nyaa_rss(query: str) -> list[dict[str, Any]]:
     params = {
         "page": "rss",
         "q": query,
@@ -201,6 +240,41 @@ def search_nyaa_rss(query: str) -> list[dict[str, Any]]:
 
     return releases
 
+def _search_nyaa_rss_queries(queries: list[str]) -> list[tuple[str, list[dict[str, Any]], str]]:
+    unique_queries: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        normalized = query.strip()
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        unique_queries.append(normalized)
+
+    if not unique_queries:
+        return []
+
+    if NYAA_RSS_SEARCH_WORKERS <= 1 or len(unique_queries) == 1:
+        results = []
+        for query in unique_queries:
+            try:
+                results.append((query, search_nyaa_rss(query), ""))
+            except TorrentFinderError as exc:
+                results.append((query, [], str(exc)))
+        return results
+
+    results_by_query: dict[str, tuple[list[dict[str, Any]], str]] = {}
+    workers = min(NYAA_RSS_SEARCH_WORKERS, len(unique_queries))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="nyaa-rss") as executor:
+        futures = {executor.submit(search_nyaa_rss, query): query for query in unique_queries}
+        for future in concurrent.futures.as_completed(futures):
+            query = futures[future]
+            try:
+                results_by_query[query] = (future.result(), "")
+            except TorrentFinderError as exc:
+                results_by_query[query] = ([], str(exc))
+
+    return [(query, *results_by_query.get(query, ([], ""))) for query in unique_queries]
 
 def _load_episode_search_releases(
     search_title: str,
@@ -211,12 +285,11 @@ def _load_episode_search_releases(
 ) -> list[dict[str, Any]]:
     loaded_releases = list(related_releases)
     loaded_keys = {_release_identity(release) for release in loaded_releases}
-    for episode in sorted(missing_episodes):
-        query = f"{search_title} {episode:02d}"
-        try:
-            episode_releases = search_nyaa_rss(query)
-        except TorrentFinderError as exc:
-            notices.append(f"Episode {episode:02d} RSS search failed: {exc}")
+    episode_by_query = {f"{search_title} {episode:02d}": episode for episode in sorted(missing_episodes)}
+    for query, episode_releases, error in _search_nyaa_rss_queries(list(episode_by_query)):
+        episode = episode_by_query[query]
+        if error:
+            notices.append(f"Episode {episode:02d} RSS search failed: {error}")
             continue
         for release in episode_releases:
             if (
@@ -233,6 +306,25 @@ def _load_episode_search_releases(
     return loaded_releases
 
 
+
+def _should_try_large_backlog_batch_search(
+    anime: dict[str, Any],
+    releases: list[dict[str, Any]],
+    missing_episodes: set[int],
+) -> bool:
+    if len(missing_episodes) < LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD:
+        return False
+    return not _has_compatible_batch_candidate(anime, releases)
+
+
+def _has_compatible_batch_candidate(anime: dict[str, Any], releases: list[dict[str, Any]]) -> bool:
+    batch_releases = [release for release in releases if release.get("release_kind") == "batch"]
+    if not batch_releases:
+        return False
+    local_group = _local_release_group_preference(anime)
+    if _local_episode_count(anime) <= 0 or not local_group:
+        return True
+    return any(str(release.get("release_group") or "").casefold() == local_group.casefold() for release in batch_releases)
 
 def _should_load_batch_fallback_searches(
     anime: dict[str, Any],
@@ -258,17 +350,9 @@ def _load_batch_search_releases(
 
     loaded_releases = list(related_releases)
     loaded_keys = {_release_identity(release) for release in loaded_releases}
-    seen_queries: set[str] = set()
-    for query in queries:
-        query = query.strip()
-        query_key = query.casefold()
-        if not query or query_key in seen_queries:
-            continue
-        seen_queries.add(query_key)
-        try:
-            batch_releases = search_nyaa_rss(query)
-        except TorrentFinderError as exc:
-            notices.append(f"Batch fallback RSS search failed for {query}: {exc}")
+    for query, batch_releases, error in _search_nyaa_rss_queries(queries):
+        if error:
+            notices.append(f"Batch fallback RSS search failed for {query}: {error}")
             continue
         for release in batch_releases:
             if (

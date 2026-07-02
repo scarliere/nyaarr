@@ -105,12 +105,20 @@
             headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
             body: new FormData(form)
           });
-          const result = await response.json();
-          if (result.redirect_url) {
-            window.location.href = result.redirect_url;
+          const contentType = response.headers.get("content-type") || "";
+          const result = contentType.includes("application/json") ? await response.json() : {};
+          if (response.ok && result.redirect_url) {
+            window.location.assign(result.redirect_url);
             return;
           }
-          if (button) button.textContent = result.ok ? "Added" : "Add failed";
+          if (response.ok) {
+            window.location.assign("{{ url_for('anime_list') }}");
+            return;
+          }
+          if (button) {
+            button.disabled = false;
+            button.textContent = result.message || "Add failed";
+          }
         } catch (error) {
           if (button) {
             button.disabled = false;

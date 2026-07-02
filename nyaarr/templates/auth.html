@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% if mode == 'setup' %}Create Superadmin{% else %}Sign In{% endif %} - Nyaarr</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/default-icon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  </head>
+  <body class="auth-body">
+    <main class="auth-shell">
+      <section class="auth-panel" aria-labelledby="auth-title">
+        <div class="auth-brand">
+          <span class="brand-mark"><img src="{{ url_for('static', filename='img/default-icon.png') }}" alt="" aria-hidden="true"></span>
+          <span>
+            <strong>Nyaarr</strong>
+            <small>{% if mode == 'setup' %}First-run security setup{% else %}Superadmin access{% endif %}</small>
+          </span>
+        </div>
+
+        <h1 id="auth-title">{% if mode == 'setup' %}Create superadmin account{% else %}Sign in{% endif %}</h1>
+        <p class="auth-copy">
+          {% if mode == 'setup' %}
+            This device has no superadmin account yet. Create one before using Nyaarr.
+          {% else %}
+            Enter the superadmin credentials for this Nyaarr instance.
+          {% endif %}
+        </p>
+
+        {% if message %}<p class="form-message error">{{ message }}</p>{% endif %}
+
+        <form class="auth-form" method="post" action="{{ url_for('setup_superadmin_post') if mode == 'setup' else url_for('login_post') }}">
+          <input type="hidden" name="next" value="{{ next_url }}">
+          <label>
+            <span>Username</span>
+            <input name="username" type="text" autocomplete="username" required autofocus minlength="3" maxlength="64">
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" autocomplete="{{ 'new-password' if mode == 'setup' else 'current-password' }}" required minlength="12">
+          </label>
+          {% if mode == 'setup' %}
+            <label>
+              <span>Confirm password</span>
+              <input name="confirm_password" type="password" autocomplete="new-password" required minlength="12">
+            </label>
+            <p class="auth-hint">Use at least 12 characters and at least three of: lowercase, uppercase, number, symbol.</p>
+          {% endif %}
+          <button class="button primary" type="submit">{% if mode == 'setup' %}Create Account{% else %}Sign In{% endif %}</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

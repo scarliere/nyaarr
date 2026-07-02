@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import struct
 import subprocess
@@ -15,6 +16,8 @@ from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from .metadata import (
     MetadataProviderError,
@@ -31,6 +34,7 @@ from .torrent_finder import episode_number_from_title, find_torrents_for_anime, 
 
 USER_DATA_DIR = Path("data/user")
 USER_DATABASE_PATH = Path(os.environ.get("NYAARR_USER_DATABASE_PATH", USER_DATA_DIR / "anime-library.json"))
+SESSION_SECRET_PATH = Path(os.environ.get("NYAARR_SESSION_SECRET_PATH", USER_DATA_DIR / "session-secret.key"))
 RESOLVED_METADATA_CACHE_PATH = Path(
     os.environ.get("NYAARR_RESOLVED_METADATA_CACHE_PATH", "data/cache/resolved-anime-metadata.json")
 )
@@ -1081,10 +1085,9 @@ def add_anime_to_library(anime: dict[str, Any], torrent_search: dict[str, Any], 
     if supplied_error:
         _append_torrent_notice(library_item, supplied_error)
     if supplied_release:
-        _queue_supplied_add_torrent(database, library_item, supplied_release)
+        _queue_supplied_add_torrent(library_item, supplied_release)
     else:
-        _refresh_torrent_search(library_item, database)
-        _maybe_dispatch_torrent(database, library_item)
+        _queue_background_torrent_search(library_item)
     if existing is not None:
         existing.update(library_item)
         _record_event(database, "library", f"Updated anime library entry for {library_item.get('title', 'anime')}.", existing)
@@ -1117,21 +1120,23 @@ def _supplied_add_torrent_release(
     return release, ""
 
 
-def _queue_supplied_add_torrent(database: dict[str, Any], anime: dict[str, Any], release: dict[str, Any]) -> None:
-    torrent_search = anime.setdefault("torrent_search", {})
-    torrent_search["query"] = str(anime.get("title") or anime.get("original_title") or "")
-    torrent_search["strategy"] = "User supplied Nyaa torrent link"
-    torrent_search["candidates"] = [release]
-    notices = torrent_search.setdefault("notices", [])
-    if isinstance(notices, list):
-        notices.append("Supplied Nyaa link was queued first; qBittorrent metadata will determine whether it is a batch or single episode.")
-    _maybe_dispatch_torrent(database, anime, forced_release=release)
+def _queue_background_torrent_search(anime: dict[str, Any]) -> None:
     anime["torrent_search"] = {
         "query": str(anime.get("title") or anime.get("original_title") or ""),
         "strategy": "Queued for background torrent search",
         "candidates": [],
+        "notices": ["Torrent search will run in the background after this anime is added."],
+    }
+
+
+def _queue_supplied_add_torrent(anime: dict[str, Any], release: dict[str, Any]) -> None:
+    anime["torrent_search"] = {
+        "query": str(anime.get("title") or anime.get("original_title") or ""),
+        "strategy": "User supplied Nyaa torrent link queued for background dispatch",
+        "candidates": [release],
+        "checked_at": datetime.now(timezone.utc).isoformat(),
         "notices": [
-            "Supplied Nyaa link was queued first; qBittorrent metadata will determine whether it is a batch or single episode.",
+            "Supplied Nyaa link was queued first; the background worker will send it to qBittorrent.",
             "Torrent search will run later for any remaining missing episodes.",
         ],
     }
@@ -1254,8 +1259,6 @@ def sidebar_counts() -> dict[str, int]:
 
 def activity_model(section: str) -> dict[str, Any]:
     database = _read_user_database()
-    if _refresh_download_queue(database):
-        _write_user_database(database)
     selected = section if section in {"queued", "history", "blocked"} else "queued"
     rows = {
         "queued": _activity_queued_rows(database),
@@ -1765,9 +1768,9 @@ def _manual_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "confidence_reasons": candidate.get("confidence_reasons") if isinstance(candidate.get("confidence_reasons"), list) else [],
     }
 
-def _activity_queued_rows(database: dict[str, Any]) -> list[dict[str, Any]]:
+def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: bool = False) -> list[dict[str, Any]]:
     rows = []
-    client_snapshot = _download_client_existing_snapshot(database)
+    client_snapshot = _download_client_existing_snapshot(database) if include_client_snapshot else {"keys": set(), "episodes_by_library_id": {}}
     for anime in database.get("anime", []):
         if not isinstance(anime, dict):
             continue
@@ -5046,6 +5049,103 @@ def _empty_scan_summary() -> dict[str, int]:
     return {"imported": 0, "updated": 0, "skipped": 0, "verified": 0, "manual_verification": 0}
 
 
+def load_or_create_session_secret() -> str:
+    env_secret = str(os.environ.get("NYAARR_SECRET_KEY") or "").strip()
+    if env_secret:
+        return env_secret
+    with _USER_DATABASE_LOCK:
+        SESSION_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if SESSION_SECRET_PATH.exists():
+            try:
+                secret = SESSION_SECRET_PATH.read_text(encoding="utf-8").strip()
+                if len(secret) >= 32:
+                    return secret
+            except OSError:
+                pass
+        secret = secrets.token_urlsafe(48)
+        SESSION_SECRET_PATH.write_text(secret + "\n", encoding="utf-8")
+        try:
+            os.chmod(SESSION_SECRET_PATH, 0o600)
+        except OSError:
+            pass
+        return secret
+
+
+def superadmin_account() -> dict[str, Any] | None:
+    auth = _read_user_database().get("auth")
+    if not isinstance(auth, dict):
+        return None
+    superadmin = auth.get("superadmin")
+    if not isinstance(superadmin, dict):
+        return None
+    username = str(superadmin.get("username") or "").strip()
+    password_hash = str(superadmin.get("password_hash") or "").strip()
+    if not username or not password_hash:
+        return None
+    return superadmin
+
+
+def has_superadmin_account() -> bool:
+    return superadmin_account() is not None
+
+
+def create_superadmin_account(username: str, password: str, confirm_password: str) -> tuple[bool, str]:
+    username = username.strip()
+    if has_superadmin_account():
+        return False, "A superadmin account already exists. Sign in with that account."
+    if not _valid_superadmin_username(username):
+        return False, "Use a username with 3-64 letters, numbers, dots, underscores, or hyphens."
+    password_error = _superadmin_password_error(password, confirm_password)
+    if password_error:
+        return False, password_error
+
+    database = _read_user_database()
+    auth = database.setdefault("auth", _empty_auth_state())
+    now = datetime.now(timezone.utc).isoformat()
+    auth["superadmin"] = {
+        "username": username,
+        "password_hash": generate_password_hash(password, method="scrypt"),
+        "role": "superadmin",
+        "created_at": now,
+        "password_updated_at": now,
+    }
+    _record_event(database, "security", f"Created superadmin account for {username}.")
+    _write_user_database(database)
+    return True, "Superadmin account created."
+
+
+def verify_superadmin_login(username: str, password: str) -> bool:
+    superadmin = superadmin_account()
+    if superadmin is None:
+        return False
+    if not secrets.compare_digest(str(superadmin.get("username") or ""), username.strip()):
+        return False
+    password_hash = str(superadmin.get("password_hash") or "")
+    try:
+        return check_password_hash(password_hash, password)
+    except (TypeError, ValueError):
+        return False
+
+
+def _valid_superadmin_username(username: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]{3,64}", username))
+
+
+def _superadmin_password_error(password: str, confirm_password: str) -> str:
+    if password != confirm_password:
+        return "Passwords do not match."
+    if len(password) < 12:
+        return "Use a password with at least 12 characters."
+    classes = [
+        bool(re.search(r"[a-z]", password)),
+        bool(re.search(r"[A-Z]", password)),
+        bool(re.search(r"\d", password)),
+        bool(re.search(r"[^A-Za-z0-9]", password)),
+    ]
+    if sum(classes) < 3:
+        return "Use at least three of: lowercase, uppercase, number, symbol."
+    return ""
+
 def _read_user_database() -> dict[str, Any]:
     with _USER_DATABASE_LOCK:
         if not USER_DATABASE_PATH.exists():
@@ -5105,6 +5205,10 @@ def _write_user_database(database: dict[str, Any]) -> None:
             json.dump(database, database_file, indent=2, sort_keys=True)
             database_file.write("\n")
         os.replace(temp_path, USER_DATABASE_PATH)
+        try:
+            os.chmod(USER_DATABASE_PATH, 0o600)
+        except OSError:
+            pass
 
 
 def _empty_user_database() -> dict[str, Any]:
@@ -5122,6 +5226,9 @@ def _empty_user_database() -> dict[str, Any]:
         "events": [],
     }
 
+
+def _empty_auth_state() -> dict[str, Any]:
+    return {"superadmin": None}
 
 def _empty_download_client_settings() -> dict[str, Any]:
     return {

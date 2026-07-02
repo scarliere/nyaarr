@@ -6,6 +6,8 @@ $VenvDir = Join-Path $ProjectRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $Requirements = Join-Path $ProjectRoot "requirements.txt"
 $StartScript = Join-Path $ProjectRoot "start.ps1"
+$AppIconPng = Join-Path $ProjectRoot "nyaarr\static\img\default-icon.png"
+$ShortcutIcon = Join-Path $ProjectRoot "data\image\nyaarr.ico"
 $ShortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Nyaarr.lnk"
 
 function Write-Step {
@@ -51,6 +53,32 @@ function Install-Python-With-Winget {
     }
 }
 
+function New-ShortcutIcon {
+    if (Test-Path -LiteralPath $ShortcutIcon) {
+        return $ShortcutIcon
+    }
+    if (-not (Test-Path -LiteralPath $AppIconPng)) {
+        return "powershell.exe,0"
+    }
+
+    Write-Step "Creating shortcut icon."
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ShortcutIcon) | Out-Null
+    Add-Type -AssemblyName System.Drawing
+    $source = [System.Drawing.Bitmap]::new($AppIconPng)
+    $bitmap = [System.Drawing.Bitmap]::new($source, [System.Drawing.Size]::new(256, 256))
+    $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
+    $stream = [System.IO.File]::Create($ShortcutIcon)
+    try {
+        $icon.Save($stream)
+    } finally {
+        $stream.Close()
+        $icon.Dispose()
+        $bitmap.Dispose()
+        $source.Dispose()
+    }
+    return $ShortcutIcon
+}
+
 function New-DesktopShortcut {
     Write-Step "Creating desktop shortcut: $ShortcutPath"
     $shell = New-Object -ComObject WScript.Shell
@@ -58,7 +86,7 @@ function New-DesktopShortcut {
     $shortcut.TargetPath = "powershell.exe"
     $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`""
     $shortcut.WorkingDirectory = $ProjectRoot
-    $shortcut.IconLocation = "powershell.exe,0"
+    $shortcut.IconLocation = New-ShortcutIcon
     $shortcut.Description = "Start Nyaarr and open it in your browser"
     $shortcut.Save()
 }

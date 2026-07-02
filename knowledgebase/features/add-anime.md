@@ -30,7 +30,7 @@ The `/add` page renders immediately and then starts metadata search from inside 
 - Provider notices when fallbacks or configuration issues occur
 - Result cards when metadata is found
 - Working result filter and sort controls
-- Add buttons that post selected metadata into the client-local JSON anime library through fetch, showing the action state on the current page before redirecting to the dashboard
+- Add buttons that post selected metadata into the client-local JSON anime library through fetch, showing the action state on the current page before redirecting to the anime list
 - A per-result resolution dropdown immediately left of Add. It defaults to `Up to: 1080p` and supports `1080p`, `720p`, and `BD`.
 - Empty state when no query or no results exist
 
@@ -85,7 +85,7 @@ After an anime is added, app state checks the configured root folder for a match
 
 The dashboard poster bar uses this local episode count against the total expected episodes, or against the latest aired episode when an airing anime has no confirmed total episode count. If an airing anime has a confirmed total, the bar uses downloaded episodes divided by the full expected total. Bar color follows the status tone: completed is green, airing is cyan, not-yet-aired is yellow, and undownloadable is a darker burnt orange so it does not read as the same warning tone as not-yet-aired. Not-yet-aired and undownloadable titles render a full-width bar as a clear state marker even though missing-episode calculations remain unchanged internally.
 
-Torrent search runs after that local episode check so candidate selection can prioritize missing episodes. If qBittorrent is configured, Nyaarr can send the selected non-BD Nyaa candidate to the download client and store queue status on the anime.
+After the local episode check, the add route stores queued torrent-search state and returns immediately. Nyaa searches and qBittorrent dispatch run from the background maintenance tick so the Add button can redirect without waiting on indexer, download-client, or external request spacing delays. If the user supplies a Nyaa/magnet/torrent link while adding, Nyaarr stores it as the first candidate for background dispatch instead of sending it during the form POST.
 
 ## Current Limitations
 

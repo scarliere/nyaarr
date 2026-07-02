@@ -9,7 +9,7 @@ The torrent finder starts when a user clicks Add on an Add Anime metadata result
 3. The form posts normalized metadata to `/anime`. The user can optionally include a Nyaa view/download link, magnet, or direct `.torrent` URL with the add request.
 4. `add_anime_to_library_route()` passes the metadata and optional supplied torrent link to app state.
 5. App state checks the configured root folder for already-present episode files.
-6. If a supplied torrent link is present, Nyaarr queues it first through qBittorrent paused safety inspection and defers normal searching until the torrent metadata has identified whether it is a single episode or batch. Otherwise, `find_torrents_for_anime()` searches nyaa.si RSS with the anime title after local episode progress is known.
+6. If a supplied torrent link is present, Nyaarr stores it as the first candidate for background qBittorrent dispatch and defers normal searching until later missing episodes need it. Otherwise, `find_torrents_for_anime()` searches nyaa.si RSS with the anime title after local episode progress is known.
 7. If qBittorrent and a root folder are configured, Nyaarr sends selected `.torrent` URLs to qBittorrent paused and stores queue records on the anime. Per-episode torrents use the anime's existing `local_path` as the save path when one is known, so alternate English/romanized release titles do not create duplicate anime folders. A single `download_queue` primary record is retained for compatibility, while `download_queues` tracks every queued per-episode torrent.
 8. Queue refresh reads qBittorrent torrent file metadata for every active queue record before allowing torrents to run. Only known anime video container files pass automatically.
 9. The Anime List dashboard shows episode progress and qBittorrent queue status. Clicking an anime card opens its detail page, where stored anime metadata appears above a Sonarr-style episode table showing downloaded, queued, missing, and unaired episode states. Single-file anime movies with exactly one expected episode map their local file to episode 1 even when the filename has no episode number. Torrent queues and blocked history live under Activity; low-confidence candidate assignment lives under Anime > Manual Selection.
@@ -123,7 +123,7 @@ Parser rule:
 - qBittorrent `v5.1.4` may require `/api/v2/torrents/start`; Nyaarr falls back to `/start` when `/resume` returns HTTP `404`.
 - Title matching derives a candidate series identity before episode/quality tokens. One-word titles such as `Monster` must match the release series title exactly, so similarly named anime like `Monster Musume` or `Pocket Monsters` are not accepted by token containment. The finder still tries stored original and metadata search titles before giving up, so alternate release names can match without broadening simple-title searches.
 - Episode parsing is heuristic and needs fixtures before production use.
-- There is no independent background worker yet; queue status refresh currently happens when the anime library is rendered.
+- Queue status refresh runs in background maintenance. Activity pages render stored queue state immediately and avoid live qBittorrent refreshes during page load; qBittorrent status updates arrive on the next maintenance tick.
 
 ## Episode Search Planning
 
@@ -135,7 +135,7 @@ When individual episode torrents from the chosen subber are stalled long enough 
 
 When a batch torrent is queued for missing episodes that already have active individual episode torrents, Nyaarr treats the batch as the replacement plan. The qBittorrent torrents for those covered individual episodes are deleted with files and the queue records are marked `superseded`, while unrelated episode queues remain active. This cleanup runs both immediately after dispatching a batch and during queue refresh so older mixed states self-repair. Selected batch files are staged into the existing anime folder during import; if a same-named destination file is already present from an earlier individual torrent, the batch-selected file replaces it so the anime folder remains the canonical location. Later refreshes also scan the anime folder for already-staged selected batch files, making repeated queue refreshes idempotent after repair or partial import.
 
-Current limitation: episode-specific searches use one RSS query per planned missing episode, so large backlogs can consume several nyaa.si requests during a refresh.
+Episode-specific searches still use one RSS query per planned missing episode when needed, but they now run through a bounded worker pool (`NYAARR_NYAA_RSS_SEARCH_WORKERS`, default `8`) with a shorter configurable timeout (`NYAARR_NYAA_HTTP_TIMEOUT_SECONDS`, default `8`). Results are cached in memory for `NYAARR_NYAA_RSS_CACHE_TTL_SECONDS` seconds, default `300`, so repeated identical RSS lookups during nearby refreshes return immediately. For large backlogs (`NYAARR_LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD`, default `6` missing episodes), Nyaarr tries batch/complete RSS queries before per-episode fan-out and skips episode-specific searches when a compatible batch candidate is found.
 
 
 

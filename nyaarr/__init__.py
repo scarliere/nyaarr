@@ -1,7 +1,9 @@
-﻿import csv
+import csv
+import hashlib
+import hmac
 from io import StringIO
 
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
+from flask import Flask, Response, current_app, jsonify, redirect, render_template, request, session, url_for
 
 from .app_state import (
     activity_model,
@@ -19,6 +21,9 @@ from .app_state import (
     display_timezone_options,
     event_log_model,
     event_log_rows,
+    create_superadmin_account,
+    has_superadmin_account,
+    load_or_create_session_secret,
     library_stats,
     manual_selection_model,
     metadata_verification_model,
@@ -32,6 +37,7 @@ from .app_state import (
     save_root_folder,
     sidebar_counts,
     test_download_client,
+    verify_superadmin_login,
     user_settings,
 )
 from .metadata import search_anime_metadata
@@ -48,15 +54,76 @@ from .result_controls import (
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    app.secret_key = load_or_create_session_secret()
+    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
     start_periodic_maintenance()
 
+    @app.before_request
+    def require_superadmin_session():
+        if _auth_route_is_public():
+            return None
+        if not has_superadmin_account():
+            if _wants_json_response():
+                return jsonify({"ok": False, "auth_required": True, "setup_required": True, "redirect_url": url_for("setup_superadmin")}), 401
+            return redirect(url_for("setup_superadmin", next=request.full_path if request.query_string else request.path))
+        if _session_is_authenticated():
+            return None
+        if _wants_json_response():
+            return jsonify({"ok": False, "auth_required": True, "redirect_url": url_for("login")}), 401
+        return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
+
+    @app.get("/setup")
+    def setup_superadmin():
+        if has_superadmin_account():
+            return redirect(url_for("login"))
+        return render_template("auth.html", mode="setup", active_page="auth", message="", next_url=_safe_next_url(request.args.get("next")))
+
+    @app.post("/setup")
+    def setup_superadmin_post():
+        next_url = _safe_next_url(request.form.get("next"))
+        success, message = create_superadmin_account(
+            request.form.get("username", ""),
+            request.form.get("password", ""),
+            request.form.get("confirm_password", ""),
+        )
+        if not success:
+            return render_template("auth.html", mode="setup", active_page="auth", message=message, next_url=next_url), 400
+        session.clear()
+        session["superadmin_authenticated"] = True
+        session["superadmin_username"] = request.form.get("username", "").strip()
+        session["auth_fingerprint"] = _client_auth_fingerprint()
+        return redirect(next_url or url_for("dashboard"))
+
+    @app.get("/login")
+    def login():
+        if not has_superadmin_account():
+            return redirect(url_for("setup_superadmin"))
+        if _session_is_authenticated():
+            return redirect(_safe_next_url(request.args.get("next")) or url_for("dashboard"))
+        return render_template("auth.html", mode="login", active_page="auth", message="", next_url=_safe_next_url(request.args.get("next")))
+
+    @app.post("/login")
+    def login_post():
+        next_url = _safe_next_url(request.form.get("next"))
+        if verify_superadmin_login(request.form.get("username", ""), request.form.get("password", "")):
+            session.clear()
+            session["superadmin_authenticated"] = True
+            session["superadmin_username"] = request.form.get("username", "").strip()
+            session["auth_fingerprint"] = _client_auth_fingerprint()
+            return redirect(next_url or url_for("dashboard"))
+        return render_template("auth.html", mode="login", active_page="auth", message="Invalid username or password.", next_url=next_url), 401
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
     @app.context_processor
     def inject_sidebar_counts():
         try:
             counts = sidebar_counts()
         except Exception:
             counts = _empty_sidebar_counts()
-        return {"sidebar_counts": counts}
+        return {"sidebar_counts": counts, "current_superadmin": session.get("superadmin_username", "")}
 
     @app.get("/sidebar-counts")
     def sidebar_counts_data():
@@ -91,7 +158,7 @@ def create_app() -> Flask:
         if anime is None:
             if _wants_json_response():
                 return jsonify({"ok": False, "message": "Anime was not found."}), 404
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("anime_list"))
         return render_template(
             "anime_detail.html",
             active_page="anime_list",
@@ -465,22 +532,22 @@ def create_app() -> Flask:
         }
         add_anime_to_library(anime, torrent_search, request.form.get("nyaa_link", ""))
         if _wants_json_response():
-            return jsonify({"ok": True, "message": f"Added {anime['title']}.", "redirect_url": url_for("dashboard")})
-        return redirect(url_for("dashboard"))
+            return jsonify({"ok": True, "message": f"Added {anime['title']}.", "redirect_url": url_for("anime_list")})
+        return redirect(url_for("anime_list"))
 
     @app.post("/torrents/flagged/allow")
     def allow_flagged_torrent_route():
         success, message = allow_flagged_torrent(request.form.get("library_id", ""))
         if _wants_json_response():
             return jsonify({"ok": success, "message": message, "redirect_url": url_for("dashboard")})
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("anime_list"))
 
     @app.post("/torrents/flagged/reject")
     def reject_flagged_torrent_route():
         success, message = reject_flagged_torrent(request.form.get("library_id", ""))
         if _wants_json_response():
             return jsonify({"ok": success, "message": message, "redirect_url": url_for("dashboard")})
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("anime_list"))
 
     return app
 
@@ -561,6 +628,47 @@ def _empty_system_status_model() -> dict[str, object]:
         "uptime": {"seconds": 0, "label": "Loading", "started_at": "Loading"},
         "links": [],
     }
+
+def _session_is_authenticated() -> bool:
+    if session.get("superadmin_authenticated") is not True:
+        return False
+    expected = str(session.get("auth_fingerprint") or "")
+    current = _client_auth_fingerprint()
+    if not expected or not hmac.compare_digest(expected, current):
+        session.clear()
+        return False
+    return True
+
+
+def _client_auth_fingerprint() -> str:
+    client_ip = _client_ip_address()
+    user_agent = request.headers.get("User-Agent", "")[:300]
+    payload = f"{client_ip}|{user_agent}".encode("utf-8", errors="ignore")
+    secret = str(current_app.secret_key or "").encode("utf-8", errors="ignore")
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def _client_ip_address() -> str:
+    for header in ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP"):
+        value = str(request.headers.get(header) or "").strip()
+        if value:
+            return value.split(",", 1)[0].strip()
+    forwarded = str(request.headers.get("X-Forwarded-For") or "").strip()
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return str(request.remote_addr or "")
+
+def _auth_route_is_public() -> bool:
+    return request.endpoint in {"static", "setup_superadmin", "setup_superadmin_post", "login", "login_post"}
+
+
+def _safe_next_url(value: str | None) -> str:
+    target = str(value or "").strip()
+    if not target or not target.startswith("/") or target.startswith("//"):
+        return ""
+    if target.startswith(("/login", "/setup", "/logout")):
+        return ""
+    return target
 
 def _wants_json_response() -> bool:
     return request.headers.get("Accept") == "application/json" or request.headers.get("X-Requested-With") == "fetch"

@@ -1,7 +1,24 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+
+import pytest
 
 import nyaarr
 
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_app(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "has_superadmin_account", lambda: True)
+    monkeypatch.setattr(nyaarr, "load_or_create_session_secret", lambda: "test-secret")
+    monkeypatch.setattr(nyaarr, "_session_is_authenticated", lambda: True)
+
+
+def _authenticated_client(app):
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["superadmin_authenticated"] = True
+        session["superadmin_username"] = "admin"
+    return client
 
 def _fake_result() -> dict[str, object]:
     return {
@@ -34,7 +51,7 @@ def test_add_page_with_query_renders_before_metadata_search(monkeypatch) -> None
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
 
-    response = app.test_client().get("/add?q=rezero")
+    response = _authenticated_client(app).get("/add?q=rezero")
 
     assert response.status_code == 200
     assert calls == []
@@ -50,7 +67,7 @@ def test_add_search_endpoint_runs_metadata_search_and_returns_partial(monkeypatc
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
 
-    response = app.test_client().get("/add/search?q=rezero", headers={"Accept": "application/json"})
+    response = _authenticated_client(app).get("/add/search?q=rezero", headers={"Accept": "application/json"})
 
     assert response.status_code == 200
     assert calls == ["rezero"]
@@ -60,6 +77,48 @@ def test_add_search_endpoint_runs_metadata_search_and_returns_partial(monkeypatc
     assert "add-anime-action" in payload["html"]
 
 
+def test_add_anime_json_redirects_to_anime_list(monkeypatch) -> None:
+    added = []
+    result = _fake_result()
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", lambda: _sidebar_counts())
+    monkeypatch.setattr(nyaarr, "add_anime_to_library", lambda anime, torrent_search, supplied_link="": added.append((anime, torrent_search, supplied_link)))
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).post(
+        "/anime",
+        data={
+            "library_id": "AniList:123",
+            "title": result["title"],
+            "original_title": result["original_title"],
+            "year": result["year"],
+            "status": result["status"],
+            "episodes": result["episodes"],
+            "season_number": str(result["season_number"]),
+            "runtime": result["runtime"],
+            "genres": "Action",
+            "studio": result["studio"],
+            "source": result["source"],
+            "rating": result["rating"],
+            "synopsis": result["synopsis"],
+            "poster": result["poster"],
+            "air_date": result["air_date"],
+            "next_airing_at": result["next_airing_at"],
+            "airing_episode": result["airing_episode"],
+            "airing_source": result["airing_source"],
+            "quality_resolution": "1080p",
+            "nyaa_link": "",
+        },
+        headers={"Accept": "application/json", "X-Requested-With": "fetch"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["redirect_url"] == "/anime/list"
+    assert added and added[0][0]["title"] == "Async Anime"
+
 def test_activity_pages_render_before_activity_model(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
@@ -67,7 +126,7 @@ def test_activity_pages_render_before_activity_model(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "activity_model", lambda section="queued": calls.append(section) or nyaarr._empty_activity_model(section))
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
-    client = app.test_client()
+    client = _authenticated_client(app)
 
     for route, data_url in (
         ("/activity", "/activity/queued/data"),
@@ -100,7 +159,7 @@ def test_activity_data_endpoint_returns_activity_model(monkeypatch) -> None:
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
 
-    response = app.test_client().get("/activity/queued/data", headers={"Accept": "application/json"})
+    response = _authenticated_client(app).get("/activity/queued/data", headers={"Accept": "application/json"})
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -129,7 +188,7 @@ def test_metadata_review_and_logs_pages_render(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "event_log_rows", lambda limit=100: [])
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
-    client = app.test_client()
+    client = _authenticated_client(app)
 
     metadata_response = client.get("/anime/metadata-verification")
     logs_response = client.get("/system/logs")
@@ -162,7 +221,7 @@ def test_primary_pages_render_stable_initial_models(monkeypatch) -> None:
 
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
-    client = app.test_client()
+    client = _authenticated_client(app)
 
     routes = (
         "/",
@@ -209,7 +268,7 @@ def test_async_table_pages_render_loading_table_placeholders(monkeypatch) -> Non
     monkeypatch.setattr(nyaarr, "event_log_model", lambda: {"rows": [], "count": 0})
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
-    client = app.test_client()
+    client = _authenticated_client(app)
 
     for route in ("/anime/manual-selection", "/anime/metadata-verification", "/system/logs"):
         response = client.get(route)
@@ -232,7 +291,7 @@ def test_async_data_endpoints_load_models_after_page_render(monkeypatch) -> None
     monkeypatch.setattr(nyaarr, "system_status_model", lambda: calls.append("status") or nyaarr._empty_system_status_model())
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
-    client = app.test_client()
+    client = _authenticated_client(app)
 
     routes = (
         "/anime/list/data-page",
@@ -271,7 +330,7 @@ def test_anime_detail_anilist_override_route_redirects(monkeypatch) -> None:
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
 
-    response = app.test_client().post("/anime/anime-1/anilist-id", data={"anilist_id": "7465"})
+    response = _authenticated_client(app).post("/anime/anime-1/anilist-id", data={"anilist_id": "7465"})
 
     assert response.status_code == 302
     assert calls == [("anime-1", "7465")]
@@ -315,7 +374,7 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
 
-    response = app.test_client().get("/anime/anime-1")
+    response = _authenticated_client(app).get("/anime/anime-1")
 
     assert response.status_code == 200
     assert b"Petals of Reincarnation" in response.data

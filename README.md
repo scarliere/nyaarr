@@ -2,7 +2,7 @@
 
 Nyaarr is a local-first anime library and download manager inspired by Sonarr. It helps you add anime, track missing episodes, search nyaa.si, send safe releases to qBittorrent, and import completed files back into your anime folders.
 
-> Alpha software: run it on a trusted machine or LAN. Built-in login is planned, but not implemented yet.
+> Alpha software: run it on a trusted machine or LAN. First startup requires a local superadmin account; passwords are stored as non-reversible hashes under ignored user data.
 
 ## Features
 
@@ -58,11 +58,11 @@ Optional environment variables:
 
 Nyaarr stores local state under `data/`:
 
-- `data/user/` contains your local anime library and settings
+- `data/user/` contains your local anime library, settings, auth hash, and session secret
 - `data/cache/` contains metadata caches
 - `data/logs/` contains launcher/runtime logs
 
-These paths are ignored by Git. Do not publish your local `data/user/anime-library.json`; it may contain private paths and download-client settings.
+These paths are ignored by Git. Do not publish your local `data/user/anime-library.json`; it may contain private paths, download-client settings, and authentication metadata.
 
 ## Development
 
@@ -76,4 +76,4 @@ Project notes live in `knowledgebase/`.
 
 ## Status
 
-Nyaarr is currently an alpha Flask app. It is best suited for local use while authentication, packaging, backup/restore, and broader deployment hardening are still being built.
+Nyaarr is currently an alpha Flask app. It is best suited for local use while packaging, backup/restore, and broader deployment hardening are still being built.

@@ -56,7 +56,12 @@
             <a class="nav-subitem {% if active_page == 'system_logs' %}active{% endif %}" href="{{ url_for('system_logs') }}"><span>Logs</span><b data-sidebar-count="events" {% if not sidebar_counts.events %}hidden{% endif %}>{{ sidebar_counts.events }}</b></a>
           </div>
         </details>
-      </nav>
+            </nav>
+      {% if current_superadmin %}
+        <form class="logout-form" method="post" action="{{ url_for('logout') }}">
+          <button class="nav-item" type="submit"><span>Sign Out</span></button>
+        </form>
+      {% endif %}
     </aside>
 
     <main class="app-shell"{% if async_data_url %} data-async-page-url="{{ async_data_url }}"{% endif %}>

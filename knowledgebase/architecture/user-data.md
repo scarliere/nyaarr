@@ -1,4 +1,4 @@
-﻿# User Data
+# User Data
 
 Nyaarr stores client-local user state as JSON under `data/user/`.
 
@@ -65,3 +65,8 @@ Only `data/user/.gitkeep` is committed so the directory exists in fresh clones.
 - Invalid or unreadable JSON is replaced with a new empty database.
 - Root folder scanning is conservative and uses filesystem names when AniList metadata is unavailable or ambiguous.
 
+
+
+## Authentication Data
+
+On first startup, Nyaarr requires creation of one local superadmin account. The username and Werkzeug-generated password hash are stored in `data/user/anime-library.json` under `auth.superadmin`; plaintext passwords are never stored. Flask session signing uses `data/user/session-secret.key` unless `NYAARR_SECRET_KEY` is provided. Authenticated sessions are bound to the current client IP signal and User-Agent; for Cloudflare Tunnel deployments Nyaarr prefers `CF-Connecting-IP`, then `True-Client-IP`, `X-Real-IP`, `X-Forwarded-For`, and finally the direct remote address. If the same session cookie appears from another network or browser profile, Nyaarr clears the session and prompts for login again. Both files live under ignored user data and must not be committed.
