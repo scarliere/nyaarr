@@ -20,6 +20,12 @@ Nyaarr is a local-first anime library and download manager inspired by Sonarr. I
 
 From the repository folder, run:
 
+```bat
+install.bat
+```
+
+PowerShell users can also run:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
@@ -65,13 +71,14 @@ Nyaarr stores local state under `data/`:
 
 These paths are ignored by Git. Do not publish your local `data/user/anime-library.json`; it may contain private paths, download-client settings, and authentication metadata.
 
-For test devices, reset Nyaarr to a fresh-client state with:
+For test devices, reset Nyaarr to a fresh-client state with either cleaner:
 
 ```powershell
 .\clear-local-data.ps1
+python scripts\clear_local_data.py
 ```
 
-Use `-Force` to skip the confirmation prompt in disposable test environments.
+Use `-Force` for PowerShell or `--force` for Python to skip the confirmation prompt in disposable test environments.
 
 ## Development
 
