@@ -4,6 +4,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $MainScript = Join-Path $ProjectRoot "main.py"
+$TrayScript = Join-Path $ProjectRoot "nyaarr\tray.py"
 $HostName = if ($env:NYAARR_HOST) { $env:NYAARR_HOST } else { "127.0.0.1" }
 $Port = if ($env:NYAARR_PORT) { [int]$env:NYAARR_PORT } else { 1269 }
 $BrowserUrl = if ($env:NYAARR_PUBLIC_URL) { $env:NYAARR_PUBLIC_URL } else { "http://127.0.0.1:$Port" }
@@ -11,6 +12,8 @@ $ProbeUrl = "http://127.0.0.1:$Port"
 $LogDir = Join-Path $ProjectRoot "data\logs"
 $StdoutLog = Join-Path $LogDir "nyaarr.out.log"
 $StderrLog = Join-Path $LogDir "nyaarr.err.log"
+$TrayOutLog = Join-Path $LogDir "nyaarr.tray.out.log"
+$TrayErrLog = Join-Path $LogDir "nyaarr.tray.err.log"
 
 function Write-Step {
     param([string]$Message)
@@ -56,6 +59,24 @@ function Open-NyaarrBrowser {
     }
 }
 
+
+function Start-NyaarrTray {
+    param([int]$NyaarrProcessId)
+    if (-not (Test-Path -LiteralPath $TrayScript)) {
+        return
+    }
+
+    $trayPython = Join-Path (Split-Path -Parent $VenvPython) "pythonw.exe"
+    if (-not (Test-Path -LiteralPath $trayPython)) {
+        $trayPython = $VenvPython
+    }
+
+    try {
+        Start-Process -FilePath $trayPython -ArgumentList @($TrayScript, "--pid", [string]$NyaarrProcessId, "--url", $BrowserUrl, "--project-root", $ProjectRoot) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $TrayOutLog -RedirectStandardError $TrayErrLog | Out-Null
+    } catch {
+        Write-Host "Unable to start tray icon: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
 function Stop-ExistingNyaarrProcesses {
     $mainScriptFullPath = [System.IO.Path]::GetFullPath($MainScript)
     $projectRootFullPath = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
@@ -71,9 +92,12 @@ function Stop-ExistingNyaarrProcesses {
             continue
         }
         $commandLine = [string]$candidate.CommandLine
+        $trayScriptFullPath = [System.IO.Path]::GetFullPath($TrayScript)
         $runsMainScript = $commandLine.IndexOf($mainScriptFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        $runsTrayScript = $commandLine.IndexOf($trayScriptFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
         $runsProjectMain = ($commandLine.IndexOf("main.py", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -and ($commandLine.IndexOf($projectRootFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
-        if ($runsMainScript -or $runsProjectMain) {
+        $runsProjectTray = ($commandLine.IndexOf("tray.py", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -and ($commandLine.IndexOf($projectRootFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        if ($runsMainScript -or $runsTrayScript -or $runsProjectMain -or $runsProjectTray) {
             $matches += $candidate
         }
     }
@@ -138,6 +162,7 @@ for ($attempt = 0; $attempt -lt 45; $attempt++) {
 }
 
 if ($started) {
+    Start-NyaarrTray $process.Id
     Write-Step "Nyaarr is ready. Opening browser."
     Open-NyaarrBrowser $BrowserUrl
     exit 0
@@ -154,6 +179,7 @@ if ($process.HasExited) {
 
 Write-Host "Nyaarr process is running, but the readiness check timed out." -ForegroundColor Yellow
 Write-Host "Trying to open $BrowserUrl anyway." -ForegroundColor Yellow
+Start-NyaarrTray $process.Id
 Open-NyaarrBrowser $BrowserUrl
 Write-Host "If the page still does not load, check $StdoutLog and $StderrLog." -ForegroundColor Yellow
 Wait-To-Read
