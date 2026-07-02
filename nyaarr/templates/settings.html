@@ -220,14 +220,16 @@
 
     function updateRootFolderProgress(progress) {
       if (!rootFolderProgress || !progress) return;
+      const phase = progress.phase || "Scanning";
+      if (!progress.active && phase === "Idle") return;
       rootFolderProgress.hidden = false;
       const total = Number(progress.total || 0);
       const current = Number(progress.current || 0);
       const percent = Number(progress.percent || 0);
-      rootFolderProgress.querySelector("[data-root-scan-phase]").textContent = progress.phase || "Scanning";
+      rootFolderProgress.querySelector("[data-root-scan-phase]").textContent = phase;
       rootFolderProgress.querySelector("[data-root-scan-count]").textContent = total ? `${current} / ${total}` : `${current}`;
       rootFolderProgress.querySelector("[data-root-scan-bar]").style.width = `${Math.max(0, Math.min(percent, 100))}%`;
-      rootFolderProgress.querySelector("[data-root-scan-message]").textContent = progress.message || "Scanning root folder.";
+      rootFolderProgress.querySelector("[data-root-scan-message]").textContent = progress.message || "Scanning root folder in the background. You can move to other pages.";
     }
 
     async function pollRootFolderProgress() {
@@ -238,6 +240,26 @@
       return progress;
     }
 
+    function startRootFolderProgressPolling() {
+      if (!rootFolderForm) return;
+      let polling = true;
+      const poller = window.setInterval(async () => {
+        if (!polling) return;
+        try {
+          const progress = await pollRootFolderProgress();
+          if (progress && !progress.active) {
+            polling = false;
+            window.clearInterval(poller);
+            if (rootFolderSaveButton) {
+              rootFolderSaveButton.disabled = false;
+              rootFolderSaveButton.textContent = "Save and scan";
+            }
+          }
+        } catch (error) {
+          // Keep the visible progress state; the next poll may succeed.
+        }
+      }, 800);
+    }
     if (rootFolderForm) {
       rootFolderForm.addEventListener("submit", async (event) => {
         const submitter = event.submitter;
@@ -263,17 +285,7 @@
           rootFolderSaveButton.disabled = true;
           rootFolderSaveButton.textContent = "Scanning";
         }
-        updateRootFolderProgress({ phase: "Starting", current: 0, total: 0, percent: 0, message: "Preparing root folder scan." });
-        let polling = true;
-        const poller = window.setInterval(async () => {
-          if (!polling) return;
-          try {
-            const progress = await pollRootFolderProgress();
-            if (progress && !progress.active && progress.phase !== "Idle") polling = false;
-          } catch (error) {
-            // Keep the scan request alive; the final response will report failures.
-          }
-        }, 800);
+        updateRootFolderProgress({ phase: "Starting", current: 0, total: 0, percent: 0, message: "Preparing root folder scan. You can move to other pages after it starts." });
 
         try {
           const response = await fetch(rootFolderForm.action, {
@@ -286,6 +298,11 @@
           });
           const result = await response.json();
           updateRootFolderProgress(result.progress);
+          if (result.ok && result.progress && result.progress.active) {
+            if (rootFolderSaveButton) rootFolderSaveButton.textContent = "Scanning";
+            startRootFolderProgressPolling();
+            return;
+          }
           const summary = result.summary || {};
           const params = new URLSearchParams({
             saved: result.ok ? "1" : "0",
@@ -300,15 +317,23 @@
           window.location.href = `${window.location.pathname}?${params.toString()}`;
         } catch (error) {
           updateRootFolderProgress({ phase: "Failed", current: 0, total: 0, percent: 0, message: "Root folder scan failed." });
-        } finally {
-          polling = false;
-          window.clearInterval(poller);
           if (rootFolderSaveButton) {
             rootFolderSaveButton.disabled = false;
             rootFolderSaveButton.textContent = "Save and scan";
           }
         }
       });
+    }
+    if (rootFolderForm) {
+      pollRootFolderProgress().then((progress) => {
+        if (progress && progress.active) {
+          if (rootFolderSaveButton) {
+            rootFolderSaveButton.disabled = true;
+            rootFolderSaveButton.textContent = "Scanning";
+          }
+          startRootFolderProgressPolling();
+        }
+      }).catch(() => {});
     }
     async function runDownloadClientTest(button, status, url, body) {
       button.disabled = true;

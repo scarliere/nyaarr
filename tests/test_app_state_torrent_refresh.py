@@ -2722,3 +2722,51 @@ def test_anilist_metadata_refresh_uses_anilist_poster_id(monkeypatch) -> None:
 
 
 
+
+
+def test_save_root_folder_queues_background_scan_without_inline_import(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Anime"
+    root.mkdir()
+    database = {"settings": {"root_folder": ""}, "anime": [], "events": []}
+    writes = []
+    started = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_root_scan_thread_active", lambda: False)
+    monkeypatch.setattr(app_state, "_start_root_folder_scan_thread", lambda path: started.append(path))
+
+    success, message, summary = app_state.save_root_folder(str(root))
+
+    assert success is True
+    assert "background" in message
+    assert summary == app_state._empty_scan_summary()
+    assert database["settings"]["root_folder"] == str(root.resolve())
+    assert started == [root.resolve()]
+    assert writes == [database]
+    assert app_state.root_folder_scan_progress()["active"] is True
+
+
+def test_root_folder_candidate_scan_reports_top_level_progress(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Anime"
+    anime_folder = root / "Petals"
+    empty_folder = root / "Empty"
+    anime_folder.mkdir(parents=True)
+    empty_folder.mkdir()
+    media_file = anime_folder / "Petals.S01E01.mkv"
+    media_file.write_bytes(b"")
+
+    monkeypatch.setattr(
+        app_state,
+        "_imported_anime_item",
+        lambda title, source_path, media_files: {"library_id": f"root-folder:{title}", "title": title, "files": [str(path) for path in media_files]},
+    )
+
+    app_state._reset_root_scan_progress("Starting")
+    candidates = app_state._root_folder_candidates(root)
+    progress = app_state.root_folder_scan_progress()
+
+    assert [candidate["title"] for candidate in candidates] == ["Petals"]
+    assert progress["phase"] == "Importing"
+    assert progress["total"] == 1
+    assert "Found 1 anime candidate" in progress["message"]

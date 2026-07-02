@@ -110,6 +110,8 @@ ROOT_IMPORT_METADATA_ON_SAVE = os.environ.get("NYAARR_ROOT_IMPORT_METADATA_ON_SA
 _STATE_MAINTENANCE_LOCK = threading.Lock()
 _USER_DATABASE_LOCK = threading.RLock()
 _ROOT_SCAN_PROGRESS_LOCK = threading.Lock()
+_ROOT_SCAN_JOB_LOCK = threading.Lock()
+_ROOT_SCAN_THREAD: threading.Thread | None = None
 _ROOT_SCAN_PROGRESS: dict[str, Any] = {
     "active": False,
     "phase": "Idle",
@@ -884,7 +886,7 @@ def save_root_folder(root_folder: str) -> tuple[bool, str, dict[str, int]]:
         return False, message, _empty_scan_summary()
 
     path = Path(normalized_root).expanduser()
-    _reset_root_scan_progress(f"Scanning {path}")
+    _reset_root_scan_progress(f"Validating {path}")
     if not path.exists():
         message = f"Root folder does not exist: {path}"
         _update_root_scan_progress(phase="Failed", message=message, active=False)
@@ -896,15 +898,50 @@ def save_root_folder(root_folder: str) -> tuple[bool, str, dict[str, int]]:
         _record_standalone_event("settings", message)
         return False, message, _empty_scan_summary()
 
-    database = _read_user_database()
-    database["settings"]["root_folder"] = str(path.resolve())
-    _seed_resolved_metadata_cache_from_library(database["anime"])
-    scan_summary = _import_root_folder_anime(database, path)
-    message = f"Root folder saved: {path.resolve()}"
-    _record_event(database, "settings", f"{message} Imported={scan_summary['imported']}, updated={scan_summary['updated']}, skipped={scan_summary['skipped']}.")
-    _write_user_database(database)
-    _update_root_scan_progress(phase="Complete", message=message, summary=scan_summary, active=False)
-    return True, message, scan_summary
+    resolved_path = path.resolve()
+    with _ROOT_SCAN_JOB_LOCK:
+        if _root_scan_thread_active():
+            message = "A root folder scan is already running. Leave this page if needed; the scan will keep running."
+            _update_root_scan_progress(phase="Already scanning", message=message, active=True)
+            return False, message, _empty_scan_summary()
+
+        database = _read_user_database()
+        database["settings"]["root_folder"] = str(resolved_path)
+        _record_event(database, "settings", f"Root folder saved: {resolved_path}. Scan queued in background.")
+        _write_user_database(database)
+        _reset_root_scan_progress(f"Queued scan for {resolved_path}")
+        _start_root_folder_scan_thread(resolved_path)
+
+    return True, f"Root folder saved: {resolved_path}. Scan is running in the background.", _empty_scan_summary()
+
+
+def _root_scan_thread_active() -> bool:
+    return _ROOT_SCAN_THREAD is not None and _ROOT_SCAN_THREAD.is_alive()
+
+
+def _start_root_folder_scan_thread(root_folder: Path) -> None:
+    global _ROOT_SCAN_THREAD
+    _ROOT_SCAN_THREAD = threading.Thread(target=_run_root_folder_scan_job, args=(root_folder,), name="nyaarr-root-folder-scan", daemon=True)
+    _ROOT_SCAN_THREAD.start()
+
+
+def _run_root_folder_scan_job(root_folder: Path) -> None:
+    try:
+        _update_root_scan_progress(phase="Reading folders", current=0, total=0, message=f"Reading top-level items from {root_folder}")
+        candidates = _root_folder_candidates(root_folder)
+        _update_root_scan_progress(phase="Saving imports", current=0, total=len(candidates), message=f"Saving {len(candidates)} anime candidate(s) to the library.")
+        database = _read_user_database()
+        database["settings"]["root_folder"] = str(root_folder)
+        _seed_resolved_metadata_cache_from_library(database["anime"])
+        scan_summary = _import_root_folder_candidates(database, root_folder, candidates)
+        message = f"Root folder scan complete: {root_folder}"
+        _record_event(database, "settings", f"{message} Imported={scan_summary['imported']}, updated={scan_summary['updated']}, skipped={scan_summary['skipped']}.")
+        _write_user_database(database)
+        _update_root_scan_progress(phase="Complete", current=len(candidates), total=len(candidates), message=message, summary=scan_summary, active=False)
+    except Exception as exc:
+        message = f"Root folder scan failed: {exc}"
+        _record_standalone_event("settings", message)
+        _update_root_scan_progress(phase="Failed", message=message, active=False)
 
 
 def delete_root_folder() -> tuple[bool, str, dict[str, int]]:
@@ -3618,11 +3655,15 @@ def _safe_folder_name(value: str) -> str:
 
 
 def _import_root_folder_anime(database: dict[str, Any], root_folder: Path) -> dict[str, int]:
-    summary = _empty_scan_summary()
-    _update_root_scan_progress(phase="Scanning", current=0, total=0, message=f"Reading folders from {root_folder}")
+    _update_root_scan_progress(phase="Reading folders", current=0, total=0, message=f"Reading folders from {root_folder}")
     candidates = _root_folder_candidates(root_folder)
+    return _import_root_folder_candidates(database, root_folder, candidates)
+
+
+def _import_root_folder_candidates(database: dict[str, Any], root_folder: Path, candidates: list[dict[str, Any]]) -> dict[str, int]:
+    summary = _empty_scan_summary()
     total = len(candidates)
-    _update_root_scan_progress(phase="Importing", current=0, total=total, message=f"Found {total} anime candidate(s).")
+    _update_root_scan_progress(phase="Importing", current=0, total=total, message=f"Found {total} anime candidate(s) in {root_folder}.")
     for index, candidate in enumerate(candidates, start=1):
         existing = next((item for item in database["anime"] if item["library_id"] == candidate["library_id"]), None)
         merge_target = _find_existing_root_import_target(database["anime"], candidate)
@@ -3662,16 +3703,23 @@ def _import_root_folder_anime(database: dict[str, Any], root_folder: Path) -> di
 
 def _root_folder_candidates(root_folder: Path) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for child in sorted(root_folder.iterdir(), key=lambda path: path.name.casefold()):
+    children = sorted(root_folder.iterdir(), key=lambda path: path.name.casefold())
+    total = len(children)
+    _update_root_scan_progress(phase="Checking media", current=0, total=total, message=f"Checking {total} top-level item(s) for anime media.")
+    for index, child in enumerate(children, start=1):
+        _update_root_scan_progress(phase="Checking media", current=index, total=total, message=f"Checking {index} of {total}: {child.name}")
         if child.is_dir():
             media_files = _media_files(child)
             if not media_files:
                 continue
+            _update_root_scan_progress(phase="Resolving metadata", current=index, total=total, message=f"Resolving metadata for {child.name}")
             candidates.append(_imported_anime_item(child.name, child, media_files))
         elif child.is_file() and child.suffix.casefold() in MEDIA_EXTENSIONS:
             title = _title_from_media_file(child)
+            _update_root_scan_progress(phase="Resolving metadata", current=index, total=total, message=f"Resolving metadata for {child.name}")
             candidates.append(_imported_anime_item(title, child, [child]))
 
+    _update_root_scan_progress(phase="Importing", current=0, total=len(candidates), message=f"Found {len(candidates)} anime candidate(s).")
     return candidates
 
 

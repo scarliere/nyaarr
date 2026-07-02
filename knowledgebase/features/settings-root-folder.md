@@ -1,11 +1,11 @@
-﻿# Settings Root Folder
+# Settings Root Folder
 
 The Settings page owns the local anime root folder.
 
 ## Routes
 
 - `GET /settings`: Shows root folder status and configuration.
-- `POST /settings/root-folder`: Saves the selected root folder and scans it for imports.
+- `POST /settings/root-folder`: Saves the selected root folder and queues a background import scan.
 - `POST /settings/root-folder/delete`: Removes the saved root folder path.
 - `GET /settings/status`: Returns the current missing required settings summary for sidebar refreshes.
 
@@ -127,9 +127,9 @@ Uncertain matches remain in the library but are flagged in dashboard badges, the
 
 Root folder scans do not run live torrent searches inline. Imported anime with no cached torrent data are marked as queued for background torrent search only when they still need episodes. Completed imports are not queued; their torrent search strategy is `No torrent search needed`. Dashboard cards and the Health panel suppress those internal queue/no-search placeholders so users only see actionable health warnings. The periodic maintenance worker refreshes pending imports under the global request caps.
 
-Root folder metadata matching checks the resolved metadata cache first, then attempts live provider matching during the save request before falling back to manual verification. When a scanned folder matches an anime that is already in the library, the scan updates that existing item with local files instead of creating a duplicate root-folder import. If a stale root-folder duplicate already exists for the same local folder, database normalization and the next scan remove that duplicate and merge the local files into the provider-backed item. Partial folders remain monitored, and missing episode searches use parsed episode numbers from local filenames when available so gaps such as episodes `1`, `2`, or `10` are queued instead of only tail episodes.
+Root folder metadata matching checks the resolved metadata cache first, then attempts live provider matching in the background scan before falling back to manual verification. When a scanned folder matches an anime that is already in the library, the scan updates that existing item with local files instead of creating a duplicate root-folder import. If a stale root-folder duplicate already exists for the same local folder, database normalization and the next scan remove that duplicate and merge the local files into the provider-backed item. Partial folders remain monitored, and missing episode searches use parsed episode numbers from local filenames when available so gaps such as episodes `1`, `2`, or `10` are queued instead of only tail episodes.
 ## Live Scan Progress
 
-Saving the root folder from Settings uses a fetch-based form submission and polls `/settings/root-folder/progress` while the scan request is running. The progress payload includes `active`, `phase`, `current`, `total`, `percent`, `message`, and the current import summary.
+Saving the root folder from Settings uses a fetch-based form submission that returns as soon as the path is validated and the background scan is queued. The Settings page polls `/settings/root-folder/progress` while it remains open, and users can move to other pages without stopping the scan. The progress payload includes `active`, `phase`, `current`, `total`, `percent`, `message`, and the current import summary.
 
-The progress bar starts immediately, shows an indeterminate-style zero state while folders are being read, then switches to `loaded anime / total anime` once candidate folders are known. The final JSON response redirects the browser back to Settings with the normal import summary query parameters.
+The progress bar starts immediately, reports milestones for validation, reading folders, checking top-level media, resolving metadata, importing records, and completion/failure. During top-level media checks the count is `checked item / total items`; during import the count is `imported anime / total anime`. If the user reloads or returns to Settings while a scan is active, the page resumes polling the existing scan.

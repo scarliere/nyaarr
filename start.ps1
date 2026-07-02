@@ -56,6 +56,44 @@ function Open-NyaarrBrowser {
     }
 }
 
+function Stop-ExistingNyaarrProcesses {
+    $mainScriptFullPath = [System.IO.Path]::GetFullPath($MainScript)
+    $projectRootFullPath = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
+    $currentProcessId = $PID
+    $processes = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue
+    $matches = @()
+
+    foreach ($candidate in $processes) {
+        if (-not $candidate.CommandLine) {
+            continue
+        }
+        if ([int]$candidate.ProcessId -eq [int]$currentProcessId) {
+            continue
+        }
+        $commandLine = [string]$candidate.CommandLine
+        $runsMainScript = $commandLine.IndexOf($mainScriptFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        $runsProjectMain = ($commandLine.IndexOf("main.py", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -and ($commandLine.IndexOf($projectRootFullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        if ($runsMainScript -or $runsProjectMain) {
+            $matches += $candidate
+        }
+    }
+
+    if (-not $matches) {
+        return
+    }
+
+    Write-Step "Stopping $($matches.Count) existing Nyaarr process(es)."
+    foreach ($match in $matches) {
+        try {
+            Stop-Process -Id $match.ProcessId -Force -ErrorAction Stop
+        } catch {
+            Write-Host "Unable to stop process $($match.ProcessId): $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    Start-Sleep -Seconds 1
+}
+
 if (-not (Test-Path -LiteralPath $VenvPython)) {
     Write-Host "Nyaarr is not installed yet. Run install.ps1 first." -ForegroundColor Yellow
     Wait-To-Read
@@ -71,8 +109,11 @@ if (-not (Test-Path -LiteralPath $MainScript)) {
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Set-Location -LiteralPath $ProjectRoot
 
+Stop-ExistingNyaarrProcesses
+
 if (Test-NyaarrReady) {
-    Write-Step "Nyaarr is already running. Opening browser at $BrowserUrl."
+    Write-Host "Port $Port is responding after stopping existing Nyaarr processes. Another service may already be using it." -ForegroundColor Yellow
+    Write-Host "Opening $BrowserUrl without starting a duplicate process." -ForegroundColor Yellow
     Open-NyaarrBrowser $BrowserUrl
     exit 0
 }
