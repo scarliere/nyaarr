@@ -83,7 +83,7 @@ function New-DesktopShortcut {
     Write-Step "Creating desktop shortcut: $ShortcutPath"
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($ShortcutPath)
-    $shortcut.TargetPath = "powershell.exe"
+    $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`""
     $shortcut.WorkingDirectory = $ProjectRoot
     $shortcut.IconLocation = New-ShortcutIcon

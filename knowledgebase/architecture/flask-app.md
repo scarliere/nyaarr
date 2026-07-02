@@ -6,11 +6,11 @@ Nyaarr is a Python Flask app that aims to provide a Sonarr-like experience for a
 
 - Entrypoint: `main.py`
 - App factory: `nyaarr/__init__.py:create_app`
-- Default local host: `127.0.0.1`
-- Default local port: `1269`
+- Default bind host: `127.0.0.1`, configurable with `NYAARR_HOST`
+- Default local port: `1269`, configurable with `NYAARR_PORT`
 - Local dependency environment: `.venv`
 
-`main.py` starts Flask with `use_reloader=False` so background preview launches do not create duplicate processes.
+`main.py` starts Flask with `use_reloader=False` so background preview launches do not create duplicate processes. The Windows launcher opens `http://127.0.0.1:1269` by default and writes startup logs to `data/logs/`. Set `NYAARR_PUBLIC_URL` to open a Cloudflare Tunnel URL instead. Set `NYAARR_HOST=0.0.0.0` only when the Flask process itself must accept LAN connections directly; Cloudflared running on the same PC can target `http://127.0.0.1:1269`.
 
 
 ## Periodic Maintenance
