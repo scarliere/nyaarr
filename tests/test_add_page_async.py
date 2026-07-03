@@ -368,6 +368,28 @@ def test_anime_detail_anilist_override_route_redirects(monkeypatch) -> None:
     assert calls == [("anime-1", "7465")]
     assert "anilist_saved=1" in response.headers["Location"]
 
+
+def test_anime_detail_episode_manual_link_route_redirects(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
+    monkeypatch.setattr(
+        nyaarr,
+        "assign_manual_torrent_url",
+        lambda library_id, torrent_link, episode: calls.append((library_id, torrent_link, episode)) or (True, "Manual torrent link was sent to qBittorrent."),
+    )
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).post(
+        "/anime/anime-1/episodes/manual-link",
+        data={"episode": "120", "torrent_link": "magnet:?xt=urn:btih:ABCDEF1234567890ABCDEF1234567890ABCDEF12"},
+    )
+
+    assert response.status_code == 302
+    assert calls == [("anime-1", "magnet:?xt=urn:btih:ABCDEF1234567890ABCDEF1234567890ABCDEF12", "120")]
+    assert "detail_saved=1" in response.headers["Location"]
+
 def test_anime_detail_page_renders_model(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
     monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
@@ -398,8 +420,8 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
             "local_path": "",
             "torrent_strategy": "",
             "episodes": [
-                {"label": "S01E01", "title": "Episode 1", "air_date": "TBA", "status": "Downloaded", "tone": "downloaded", "quality": "1080p", "file": "Episode1.mkv", "path": "C:/Anime/Episode1.mkv", "progress": None},
-                {"label": "S01E02", "title": "Episode 2", "air_date": "TBA", "status": "Missing", "tone": "missing", "quality": "1080p", "file": "", "path": "", "progress": None},
+                {"label": "S01E01", "episode": 1, "title": "Episode 1", "air_date": "TBA", "status": "Downloaded", "tone": "downloaded", "quality": "1080p", "file": "Episode1.mkv", "path": "C:/Anime/Episode1.mkv", "progress": None},
+                {"label": "S01E02", "episode": 2, "title": "Episode 2", "air_date": "TBA", "status": "Missing", "tone": "missing", "quality": "1080p", "file": "", "path": "", "progress": None},
             ],
         },
     )
@@ -415,7 +437,9 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
     assert b"Edit AniList ID" in response.data
     assert b"anilist-edit-dialog" in response.data
     assert b"Update AniList" not in response.data
-
+    assert b"/anime/anime-1/episodes/manual-link" in response.data
+    assert b'name="episode" value="2"' in response.data
+    assert b"Magnet link or .torrent URL" in response.data
 
 
 def test_download_client_save_json_returns_redirect(monkeypatch) -> None:

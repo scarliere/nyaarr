@@ -39,6 +39,15 @@ def _process_running(pid: int) -> bool:
         return False
 
 
+def _windows_hidden_startupinfo() -> subprocess.STARTUPINFO | None:
+    if os.name != "nt":
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return startupinfo
+
+
 def _terminate_process_tree(pid: int) -> None:
     if pid <= 0:
         return
@@ -48,6 +57,8 @@ def _terminate_process_tree(pid: int) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            startupinfo=_windows_hidden_startupinfo(),
         )
         return
     try:

@@ -1038,6 +1038,27 @@ def test_activity_queued_rows_do_not_mark_download_client_episode_as_wanted(monk
 
 
 
+def test_activity_queued_rows_skip_unmonitored_anime() -> None:
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    anime["monitored"] = False
+    anime["completion"] = {
+        "expected_episodes": 3,
+        "local_episodes": 1,
+        "progress_target": 3,
+        "missing_episodes": 2,
+    }
+    anime["download_queue"] = {
+        "status": "queued",
+        "hash": "active-hash",
+        "episode": 2,
+        "message": "Queued torrent is waiting for qBittorrent.",
+    }
+    anime["download_queues"] = [anime["download_queue"]]
+
+    assert app_state._activity_queued_rows(database) == []
+    assert app_state._active_activity_count(database["anime"]) == 0
+
 def test_activity_model_does_not_refresh_download_client_on_page_load(monkeypatch) -> None:
     database = auto_dispatch_database([])
     writes = []
@@ -3311,6 +3332,56 @@ def test_update_anime_preferences_marks_unmonitored_and_refresh_pending(monkeypa
     assert "checked_at" not in anime["torrent_search"]
     assert writes == [database]
 
+
+def test_update_anime_preferences_unmonitor_clears_active_queues_and_keeps_history(monkeypatch) -> None:
+    active_queue = {
+        "status": "queued",
+        "hash": "active-hash",
+        "episode": 2,
+        "title": "[SubsPlease] Petals of Reincarnation - 02 [1080p]",
+    }
+    completed_queue = {
+        "status": "completed",
+        "hash": "complete-hash",
+        "episode": 1,
+        "title": "[SubsPlease] Petals of Reincarnation - 01 [1080p]",
+    }
+    database = {
+        "settings": {"root_folder": "C:/Anime"},
+        "events": [],
+        "anime": [
+            {
+                "library_id": "anime-1",
+                "title": "Petals of Reincarnation",
+                "quality_resolution": "1080p",
+                "season_number": 1,
+                "monitored": True,
+                "episodes": "12",
+                "completion": {"expected_episodes": 12, "local_episodes": 1, "progress_target": 12, "missing_episodes": 11},
+                "torrent_search": {"checked_at": "2026-01-01T00:00:00+00:00", "candidates": [{"title": "old"}]},
+                "torrent_manual_selection": {"required": True},
+                "download_queue": active_queue,
+                "download_queues": [active_queue, completed_queue],
+            }
+        ],
+    }
+    writes = []
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    success, message = app_state.update_anime_preferences("anime-1", {"quality_resolution": "1080p", "season_number": "1"})
+
+    anime = database["anime"][0]
+    assert success is True
+    assert "Cleared 1 active queued download(s)." in message
+    assert anime["monitored"] is False
+    assert anime["download_queues"] == [completed_queue]
+    assert anime["download_queue"] == completed_queue
+    assert anime["torrent_manual_selection"] == {"required": False}
+    assert anime["torrent_search"]["strategy"] == "Torrent search paused because anime is unmonitored"
+    assert anime["torrent_search"]["candidates"] == []
+    assert "checked_at" not in anime["torrent_search"]
+    assert writes == [database]
 
 def test_delete_anime_removes_library_item_without_touching_files(monkeypatch) -> None:
     database = {"settings": {}, "events": [], "anime": [{"library_id": "anime-1", "title": "Petals"}, {"library_id": "anime-2", "title": "Other"}]}

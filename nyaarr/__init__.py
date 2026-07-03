@@ -168,7 +168,21 @@ def create_app() -> Flask:
             active_page="anime_list",
             anime=anime,
             anilist_summary=_anilist_summary_from_query(),
+            detail_summary=_anime_detail_summary_from_query(),
         )
+
+    @app.post("/anime/<path:library_id>/episodes/manual-link")
+    def submit_anime_episode_manual_torrent_link(library_id: str):
+        success, message = assign_manual_torrent_url(
+            library_id,
+            request.form.get("torrent_link", ""),
+            request.form.get("episode", ""),
+        )
+        redirect_url = url_for("anime_detail", library_id=library_id, detail_saved="1" if success else "0", detail_message=message)
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
+
     @app.post("/anime/<path:library_id>/anilist-id")
     def update_anime_anilist_id(library_id: str):
         success, message = apply_manual_anilist_id(library_id, request.form.get("anilist_id", ""))
@@ -742,6 +756,13 @@ def _anilist_summary_from_query() -> dict[str, str] | None:
     if not message:
         return None
     return {"ok": request.args.get("anilist_saved") == "1", "message": message}
+
+
+def _anime_detail_summary_from_query() -> dict[str, str] | None:
+    message = request.args.get("detail_message")
+    if not message:
+        return None
+    return {"ok": request.args.get("detail_saved") == "1", "message": message}
 
 
 def _display_summary_from_query() -> dict[str, str] | None:

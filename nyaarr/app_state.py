@@ -1108,17 +1108,25 @@ def update_anime_preferences(library_id: str, form: dict[str, Any]) -> tuple[boo
         return False, "Anime was not found."
     old_quality = _quality_resolution(anime)
     old_season = _season_hint_value(anime.get("season_number")) or 1
+    old_monitored = anime.get("monitored") is not False
     anime["quality_resolution"] = _quality_resolution({"quality_resolution": form.get("quality_resolution")})
     anime["quality_profile"] = _quality_profile_label(anime)
     anime["season_number"] = max(_int_value(form.get("season_number")) or 1, 1)
     anime["monitored"] = form.get("monitored") == "on"
     _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
-    if old_quality != _quality_resolution(anime) or old_season != anime["season_number"]:
+    cleanup_messages = []
+    if not anime["monitored"]:
+        cleanup = _clear_download_plan_for_unmonitored(anime)
+        if cleanup["removed_queues"]:
+            cleanup_messages.append(f"Cleared {cleanup['removed_queues']} active queued download(s).")
+    elif old_quality != _quality_resolution(anime) or old_season != anime["season_number"]:
         cleanup = _clear_download_plan_for_metadata_override(anime)
         _mark_torrent_search_pending(anime)
-        cleanup_message = f" Cleared {cleanup['removed_queues']} active queued download(s)." if cleanup["removed_queues"] else ""
-    else:
-        cleanup_message = ""
+        if cleanup["removed_queues"]:
+            cleanup_messages.append(f"Cleared {cleanup['removed_queues']} active queued download(s).")
+    elif not old_monitored and not _download_need_satisfied(anime):
+        _mark_torrent_search_pending(anime)
+    cleanup_message = f" {' '.join(cleanup_messages)}" if cleanup_messages else ""
     _record_event(database, "library", f"Updated anime preferences for {anime.get('title', 'anime')}.{cleanup_message}", anime)
     _write_user_database(database)
     return True, "Anime preferences saved." + cleanup_message
@@ -1911,6 +1919,22 @@ def _clear_download_plan_for_metadata_override(anime: dict[str, Any]) -> dict[st
     }
     return {"removed_queues": removed, "kept_history": len(kept)}
 
+def _clear_download_plan_for_unmonitored(anime: dict[str, Any]) -> dict[str, int]:
+    queues = _download_queue_items(anime)
+    kept = [queue for queue in queues if queue.get("status") in {"completed", "imported"}]
+    removed = len(queues) - len(kept)
+    anime["download_queues"] = kept
+    _sync_primary_download_queue(anime, kept)
+    anime["torrent_manual_selection"] = {"required": False}
+    anime["torrent_search"] = {
+        "query": str(anime.get("title") or anime.get("original_title") or ""),
+        "strategy": "Torrent search paused because anime is unmonitored",
+        "candidates": [],
+        "notices": ["Anime is unmonitored; queued torrent downloads and candidates were cleared."],
+    }
+    return {"removed_queues": removed, "kept_history": len(kept)}
+
+
 def apply_metadata_verification(library_id: str, selection_key: str) -> tuple[bool, str]:
     database = _read_user_database()
     anime = _find_database_anime(database, library_id)
@@ -1990,6 +2014,8 @@ def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: 
     client_snapshot = _download_client_existing_snapshot(database) if include_client_snapshot else {"keys": set(), "episodes_by_library_id": {}}
     for anime in database.get("anime", []):
         if not isinstance(anime, dict):
+            continue
+        if anime.get("monitored") is False:
             continue
         active_episodes: set[int] = set()
         active_episodes.update(_download_client_queued_episodes(anime, client_snapshot))
