@@ -9,6 +9,9 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $MainScript = Join-Path $ProjectRoot "main.py"
 $TrayScript = Join-Path $ProjectRoot "nyaarr\tray.py"
 $DataRoot = Join-Path $ProjectRoot "data"
+$PreservedFilesByDirectory = @{
+    ([System.IO.Path]::GetFullPath((Join-Path $DataRoot "image")).TrimEnd('\')) = @("nyaarr.ico")
+}
 $Targets = @(
     Join-Path $DataRoot "user",
     Join-Path $DataRoot "cache",
@@ -74,7 +77,9 @@ function Clear-DirectoryContents {
     param([string]$Path)
     Assert-InProject $Path
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
-    Get-ChildItem -LiteralPath $Path -Force | Where-Object { $_.Name -ne ".gitkeep" } | ForEach-Object {
+    $pathKey = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $preservedNames = @($PreservedFilesByDirectory[$pathKey])
+    Get-ChildItem -LiteralPath $Path -Force | Where-Object { $_.Name -ne ".gitkeep" -and $preservedNames -notcontains $_.Name } | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName -Recurse -Force
     }
     New-Item -ItemType File -Force -Path (Join-Path $Path ".gitkeep") | Out-Null
@@ -84,7 +89,7 @@ Write-Host "This will delete Nyaarr local test data under:" -ForegroundColor Yel
 foreach ($target in $Targets) {
     Write-Host "  $target" -ForegroundColor Yellow
 }
-Write-Host "It will not delete code, .venv, tools, requirements, or the desktop shortcut." -ForegroundColor Yellow
+Write-Host "It will not delete code, .venv, tools, requirements, the desktop shortcut, or data\image\nyaarr.ico." -ForegroundColor Yellow
 
 if (-not $Force) {
     $answer = Read-Host "Type CLEAN to continue"

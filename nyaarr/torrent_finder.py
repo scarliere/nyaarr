@@ -161,18 +161,33 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
     }
 def _search_titles(anime: dict[str, Any]) -> list[str]:
     titles: list[str] = []
-    values = [anime.get("title"), anime.get("original_title")]
-    metadata_titles = anime.get("metadata_search_titles")
-    if isinstance(metadata_titles, list):
-        values.extend(metadata_titles)
     seen: set[str] = set()
-    for value in values:
+    for value in _anime_title_values(anime):
         title = str(value or "").strip()
         key = title.casefold()
         if title and key not in seen:
             titles.append(title)
             seen.add(key)
     return titles
+
+
+def _anime_title_values(anime: dict[str, Any]) -> list[Any]:
+    values: list[Any] = [
+        anime.get("title"),
+        anime.get("original_title"),
+        anime.get("romaji_title"),
+        anime.get("english_title"),
+        anime.get("native_title"),
+    ]
+    for key in ("metadata_search_titles", "aliases"):
+        titles = anime.get(key)
+        if isinstance(titles, list):
+            values.extend(titles)
+    provider_title = anime.get("provider_title")
+    if isinstance(provider_title, dict):
+        values.extend(provider_title.get(key) for key in ("romaji", "english", "native"))
+    return values
+
 
 def _release_group_preferences(local_group: str = "", preferred_subbers: list[str] | None = None) -> list[str]:
     groups: list[str] = []

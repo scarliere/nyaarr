@@ -291,6 +291,34 @@ def test_find_torrents_continues_alias_search_for_existing_local_subber(monkeypa
     assert [candidate["episode"] for candidate in result["candidates"]] == [10, 11]
     assert {candidate["release_group"] for candidate in result["candidates"]} == {"SubsPlease"}
 
+def test_find_torrents_uses_alias_title_for_search_when_primary_title_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    anime_item = anime(progress_target=1)
+    anime_item.update(
+        {
+            "title": "Petals of Reincarnation",
+            "aliases": ["Reincarnation no Kaben"],
+        }
+    )
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        calls.append(query)
+        if query == "Reincarnation no Kaben":
+            candidate = release("SubsPlease", 1, seeders=20)
+            candidate["title"] = "[SubsPlease] Reincarnation no Kaben - 01 [1080p]"
+            return [candidate]
+        return []
+
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
+    monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
+
+    result = torrent_finder.find_torrents_for_anime(anime_item)
+
+    assert calls[:2] == ["Petals of Reincarnation", "Reincarnation no Kaben"]
+    assert result["query"] == "Reincarnation no Kaben"
+    assert result["candidates"][0]["episode"] == 1
+    assert "Used alternate title search: Reincarnation no Kaben." in result["notices"]
+
 def test_episode_selection_keeps_one_best_release_per_episode_before_candidate_cap() -> None:
     releases = []
     for episode in range(1, 13):

@@ -13,6 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data"
 TARGETS = [DATA_ROOT / "user", DATA_ROOT / "cache", DATA_ROOT / "logs", DATA_ROOT / "image"]
+PRESERVED_FILES = {DATA_ROOT / "image": {"nyaarr.ico"}}
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
 TRAY_SCRIPT = PROJECT_ROOT / "nyaarr" / "tray.py"
 
@@ -102,8 +103,9 @@ def stop_existing_nyaarr_processes() -> None:
 def clear_directory_contents(path: Path) -> None:
     assert_in_project(path)
     path.mkdir(parents=True, exist_ok=True)
+    preserved_names = PRESERVED_FILES.get(path, set())
     for child in path.iterdir():
-        if child.name == ".gitkeep":
+        if child.name == ".gitkeep" or child.name in preserved_names:
             continue
         if child.is_dir():
             shutil.rmtree(child)
@@ -116,7 +118,7 @@ def confirm(force: bool) -> bool:
     print("This will delete Nyaarr local test data under:")
     for target in TARGETS:
         print(f"  {target}")
-    print("It will not delete code, .venv, tools, requirements, or the desktop shortcut.")
+    print("It will not delete code, .venv, tools, requirements, the desktop shortcut, or data/image/nyaarr.ico.")
     if force:
         return True
     return input("Type CLEAN to continue: ") == "CLEAN"

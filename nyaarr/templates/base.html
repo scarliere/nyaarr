@@ -133,6 +133,57 @@
         }
       }
 
+      window.refreshSidebarCounts = refreshSidebarCounts;
+
+      let rootScanSidebarPoller = null;
+      let rootScanSidebarPollInterval = 0;
+      let rootScanSidebarLastActive = null;
+      let rootScanSidebarLastCompletedAt = "";
+
+      async function checkRootScanForSidebarCounts() {
+        try {
+          const response = await fetch("{{ url_for('root_folder_progress') }}", {
+            headers: {"Accept": "application/json", "X-Requested-With": "fetch"}
+          });
+          if (!response.ok) return null;
+          const progress = await response.json();
+          const active = Boolean(progress.active);
+          const completedAt = String(progress.completed_at || "");
+          const justFinished = rootScanSidebarLastActive === true && !active;
+          const completedChanged = !active && completedAt && completedAt !== rootScanSidebarLastCompletedAt;
+          if (justFinished || completedChanged) {
+            await refreshSidebarCounts();
+          }
+          rootScanSidebarLastActive = active;
+          if (completedAt) {
+            rootScanSidebarLastCompletedAt = completedAt;
+          }
+          return progress;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      function scheduleRootScanSidebarWatcher(intervalMs) {
+        if (rootScanSidebarPoller && rootScanSidebarPollInterval === intervalMs) return;
+        if (rootScanSidebarPoller) window.clearInterval(rootScanSidebarPoller);
+        rootScanSidebarPollInterval = intervalMs;
+        const tick = async () => {
+          const progress = await checkRootScanForSidebarCounts();
+          if (progress && progress.active && rootScanSidebarPollInterval !== 1000) {
+            scheduleRootScanSidebarWatcher(1000);
+          } else if (progress && !progress.active && rootScanSidebarPollInterval !== 10000) {
+            scheduleRootScanSidebarWatcher(10000);
+          }
+        };
+        tick();
+        rootScanSidebarPoller = window.setInterval(tick, intervalMs);
+      }
+
+      window.startRootScanSidebarWatcher = function(intervalMs = 1000) {
+        scheduleRootScanSidebarWatcher(intervalMs);
+      };
+
       async function loadAsyncPageContent() {
         const shell = document.querySelector("[data-async-page-url]");
         const target = document.getElementById("async-page-content");
@@ -164,6 +215,7 @@
       window.addEventListener("DOMContentLoaded", () => {
         refreshSidebarCounts();
         loadAsyncPageContent();
+        scheduleRootScanSidebarWatcher(10000);
       });
     </script>
     {% block scripts %}{% endblock %}

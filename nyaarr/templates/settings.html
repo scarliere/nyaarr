@@ -261,6 +261,7 @@
           if (progress && !progress.active) {
             polling = false;
             window.clearInterval(poller);
+            if (window.refreshSidebarCounts) await window.refreshSidebarCounts();
             if (rootFolderSaveButton) {
               rootFolderSaveButton.disabled = false;
               rootFolderSaveButton.textContent = "Save and scan";
@@ -311,6 +312,7 @@
           updateRootFolderProgress(result.progress);
           if (result.ok && result.progress && result.progress.active) {
             if (rootFolderSaveButton) rootFolderSaveButton.textContent = "Scanning";
+            if (window.startRootScanSidebarWatcher) window.startRootScanSidebarWatcher(1000);
             startRootFolderProgressPolling();
             return;
           }
@@ -342,6 +344,7 @@
             rootFolderSaveButton.disabled = true;
             rootFolderSaveButton.textContent = "Scanning";
           }
+          if (window.startRootScanSidebarWatcher) window.startRootScanSidebarWatcher(1000);
           startRootFolderProgressPolling();
         }
       }).catch(() => {});

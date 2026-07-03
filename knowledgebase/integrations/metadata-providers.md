@@ -107,6 +107,9 @@ When a confident AniList match is found, Nyaarr updates the stored episode count
 
 Local progress only counts files in the selected season folder when a season folder exists, so extras under folders such as `Other` or `Trailers` do not inflate downloaded episode totals. Some providers count recap/special entries such as episode `0` or `.5` in the total; when local files contain a contiguous main run plus those special files, completion uses the main-episode count as the effective download target and stores `episode_count_adjustment` with the provider total. This prevents searches for non-existent final episodes while preserving the provider metadata.
 
+## Root-Folder Match Confidence
+
+Root-folder metadata matching scores the imported folder title against the provider title, original/Romaji title, explicit aliases, metadata search titles, and provider title objects such as AniList `romaji`, `english`, and `native`. Exact alias or Romaji matches can satisfy confidence even when the English display title differs, while year, season, part/cour, and episode-count compatibility still constrain ambiguous matches.
 ## Poster Repair
 
 The periodic maintenance worker repairs missing or blocked posters outside page render paths. Dashboard and calendar pages never call metadata providers directly for poster repair.
@@ -161,3 +164,5 @@ Live checks performed:
 ## Poster Fallbacks
 
 When a primary metadata provider returns a confident anime match without poster artwork, Nyaarr continues checking fallback providers for a matching result with a poster. Metadata search results are enriched before callers receive them, so Add Anime, root-folder import, manual verification, and background metadata refresh can keep the selected provider identity from the best metadata match while using the poster URL and `poster_source` from an equivalent fallback match. This helps fresh client scans resolve artwork for titles whose AniList result temporarily lacks cover art, such as `SANDA`.
+
+Root-folder imports and poster repair prefer AniList artwork when an AniList ID or confident title match is available, even if a fallback provider already supplied an anime-offline-database or Kitsu poster. Legacy fallback-backed rows are normalized into pending AniList reconciliation so the maintenance worker retries AniList metadata and poster lookup without waiting for stale fallback artwork to fail in the browser.

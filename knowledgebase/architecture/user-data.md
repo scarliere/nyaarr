@@ -62,7 +62,7 @@ Only `data/user/.gitkeep` is committed so the directory exists in fresh clones.
 
 ## Local Data Cleaner
 
-`clear-local-data.ps1` and `scripts/clear_local_data.py` are testing utilities for resetting a client to a fresh-install state. They stop running Nyaarr Python/tray processes, clear `data/user/`, `data/cache/`, `data/logs/`, and `data/image/`, then recreate `.gitkeep` placeholders. They do not delete code, `.venv`, `tools/`, requirements, or the desktop shortcut. Run PowerShell with `-Force` or Python with `--force` to skip the `CLEAN` confirmation prompt on disposable test devices.
+`clear-local-data.ps1` and `scripts/clear_local_data.py` are testing utilities for resetting a client to a fresh-install state. They stop running Nyaarr Python/tray processes, clear `data/user/`, `data/cache/`, `data/logs/`, and generated files under `data/image/`, then recreate `.gitkeep` placeholders. They preserve `data/image/nyaarr.ico` because the Windows desktop shortcut points at that file for its icon. They do not delete code, `.venv`, `tools/`, requirements, or the desktop shortcut. Run PowerShell with `-Force` or Python with `--force` to skip the `CLEAN` confirmation prompt on disposable test devices.
 
 ## Current Limitations
 

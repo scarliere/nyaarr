@@ -260,6 +260,38 @@ def test_primary_pages_render_stable_initial_models(monkeypatch) -> None:
     assert "sidebar" in calls
 
 
+def test_base_shell_polls_root_scan_progress_for_sidebar_badges(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
+    monkeypatch.setattr(nyaarr, "anime_library", lambda: [])
+    monkeypatch.setattr(nyaarr, "library_stats", lambda: {})
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).get("/anime/list")
+
+    assert response.status_code == 200
+    assert b'/settings/root-folder/progress' in response.data
+    assert b'startRootScanSidebarWatcher' in response.data
+    assert b'window.refreshSidebarCounts = refreshSidebarCounts' in response.data
+    assert b'scheduleRootScanSidebarWatcher(10000)' in response.data
+
+
+def test_settings_root_scan_starts_global_sidebar_watcher(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
+    monkeypatch.setattr(nyaarr, "user_settings", lambda: nyaarr._empty_settings_model())
+    monkeypatch.setattr(nyaarr, "root_folder_missing", lambda: True)
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).get("/settings")
+
+    assert response.status_code == 200
+    assert b'window.startRootScanSidebarWatcher(1000)' in response.data
+    assert b'window.refreshSidebarCounts' in response.data
+
+
 def test_async_table_pages_render_loading_table_placeholders(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
     monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)

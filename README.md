@@ -78,7 +78,7 @@ For test devices, reset Nyaarr to a fresh-client state with either cleaner:
 python scripts\clear_local_data.py
 ```
 
-Use `-Force` for PowerShell or `--force` for Python to skip the confirmation prompt in disposable test environments.
+Use `-Force` for PowerShell or `--force` for Python to skip the confirmation prompt in disposable test environments. The cleaners preserve `data/image/nyaarr.ico` so existing desktop shortcuts keep their icon after a data wipe.
 
 ## Development
 

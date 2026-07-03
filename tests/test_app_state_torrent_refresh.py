@@ -430,6 +430,32 @@ def test_confidence_penalizes_longer_different_series_title() -> None:
     assert "torrent title does not match the selected anime title" in reasons
 
 
+def test_confidence_uses_alias_and_romaji_titles_as_positive_matches() -> None:
+    database = {"settings": {"torrent_confidence_threshold": 70, "preferred_subbers": []}, "ignored_torrents": []}
+    anime = auto_dispatch_database([])["anime"][0]
+    anime.update(
+        {
+            "title": "Petals of Reincarnation",
+            "original_title": "Reincarnation no Kaben",
+            "aliases": ["Petals Reincarnated"],
+            "completion": {"expected_episodes": 1, "local_episodes": 0, "progress_target": 1, "missing_episodes": 1},
+        }
+    )
+    romaji_candidate = auto_candidate(1, "SubsPlease")
+    romaji_candidate["title"] = "[SubsPlease] Reincarnation no Kaben - 01 [1080p]"
+    alias_candidate = auto_candidate(1, "SubsPlease")
+    alias_candidate["title"] = "[SubsPlease] Petals Reincarnated - 01 [1080p]"
+
+    romaji_score, romaji_reasons = app_state._torrent_candidate_confidence(romaji_candidate, database, anime)
+    alias_score, alias_reasons = app_state._torrent_candidate_confidence(alias_candidate, database, anime)
+
+    assert romaji_score >= database["settings"]["torrent_confidence_threshold"]
+    assert alias_score >= database["settings"]["torrent_confidence_threshold"]
+    assert "torrent title does not match the selected anime title" not in romaji_reasons
+    assert "torrent title does not match the selected anime title" not in alias_reasons
+    assert "torrent title matches anime romaji title Reincarnation no Kaben" in romaji_reasons
+    assert "torrent title matches anime alias title Petals Reincarnated" in alias_reasons
+
 def test_batch_file_selection_skips_samples_sidecars_and_maps_episode_files(monkeypatch) -> None:
     database = auto_dispatch_database([])
     anime = database["anime"][0]
@@ -1818,6 +1844,49 @@ def test_poster_repair_replaces_blocked_poster_from_alternate_provider(monkeypat
     assert "Repaired poster" in database["events"][-1]["message"]
 
 
+def test_poster_repair_prefers_anilist_for_unverified_fallback_poster(monkeypatch) -> None:
+    database = {"events": []}
+    anime = {
+        "library_id": "root-folder:petals",
+        "title": "Petals of Reincarnation",
+        "original_title": "Reincarnation no Kaben",
+        "year": "2026",
+        "season_number": 1,
+        "poster": "https://cdn.animenewsnetwork.com/petals.jpg",
+        "poster_source": "anime-offline-database",
+        "provider_ids": {"anilist": "179950"},
+    }
+    calls = []
+
+    monkeypatch.setattr(app_state, "_poster_url_accessible", lambda url: (_ for _ in ()).throw(AssertionError("fallback poster should not be treated as final before AniList lookup")))
+    monkeypatch.setattr(
+        app_state,
+        "search_anilist_by_id",
+        lambda anilist_id: calls.append(anilist_id)
+        or {
+            "title": "Petals of Reincarnation",
+            "original_title": "Reincarnation no Kaben",
+            "year": "2026",
+            "season_number": 1,
+            "source": "AniList",
+            "poster": "https://anilist.example/petals.jpg",
+            "provider_ids": {"anilist": "179950"},
+        },
+    )
+    monkeypatch.setattr(app_state, "search_anilist", lambda title: [])
+    monkeypatch.setattr(app_state, "search_kitsu", lambda title: [])
+    monkeypatch.setattr(app_state, "search_tmdb", lambda title: [])
+
+    changed = app_state._repair_anime_poster(database, anime)
+
+    assert changed is True
+    assert calls == ["179950"]
+    assert anime["poster"] == "https://anilist.example/petals.jpg"
+    assert anime["poster_source"] == "AniList"
+    assert anime["provider_ids"]["anilist"] == "179950"
+    assert anime["poster_status"] == "repaired"
+
+
 def test_poster_repair_uses_provider_id_before_title_search(monkeypatch) -> None:
     database = {"events": []}
     anime = {
@@ -1852,6 +1921,51 @@ def test_poster_repair_uses_provider_id_before_title_search(monkeypatch) -> None
     assert calls == ["123"]
     assert anime["poster"] == "https://anilist.example/digimon.jpg"
     assert anime["poster_source"] == "AniList"
+
+
+def test_poster_repair_prefers_anilist_title_search_for_unverified_fallback_poster(monkeypatch) -> None:
+    database = {"events": []}
+    anime = {
+        "library_id": "root-folder:sanda",
+        "title": "SANDA",
+        "original_title": "Unknown",
+        "year": "2025",
+        "season_number": 1,
+        "poster": "https://cdn.animenewsnetwork.com/sanda.jpg",
+        "poster_source": "anime-offline-database",
+        "metadata_search_titles": ["Sanda"],
+        "provider_ids": {},
+    }
+    calls = []
+
+    monkeypatch.setattr(app_state, "_poster_url_accessible", lambda url: (_ for _ in ()).throw(AssertionError("fallback poster should not be accepted before provider search")))
+    monkeypatch.setattr(app_state, "search_anilist_by_id", lambda anilist_id: None)
+    monkeypatch.setattr(
+        app_state,
+        "search_anilist",
+        lambda title: calls.append(title)
+        or [
+            {
+                "title": "SANDA",
+                "original_title": "Sanda",
+                "year": "2025",
+                "season_number": 1,
+                "source": "AniList",
+                "poster": "https://anilist.example/sanda.jpg",
+                "provider_ids": {"anilist": "185586"},
+            }
+        ],
+    )
+    monkeypatch.setattr(app_state, "search_kitsu", lambda title: [])
+    monkeypatch.setattr(app_state, "search_tmdb", lambda title: [])
+
+    changed = app_state._repair_anime_poster(database, anime)
+
+    assert changed is True
+    assert calls[0] == "SANDA"
+    assert anime["poster"] == "https://anilist.example/sanda.jpg"
+    assert anime["poster_source"] == "AniList"
+    assert anime["provider_ids"]["anilist"] == "185586"
 
 
 def test_valid_poster_is_marked_ok_without_provider_search(monkeypatch) -> None:
@@ -2703,6 +2817,21 @@ def test_anilist_metadata_refresh_rechecks_stale_anilist_backed_items() -> None:
     assert app_state._should_refresh_anilist_metadata(anime, now) is False
 
 
+def test_normalization_marks_legacy_fallback_metadata_for_anilist_reconciliation() -> None:
+    anime = {
+        "title": "Petals of Reincarnation",
+        "source": "Root Folder Scan + anime-offline-database",
+        "provider_ids": {"anilist": "179950"},
+        "anilist_metadata_checked_at": "2026-06-29T00:00:00Z",
+    }
+
+    changed = app_state._normalize_anilist_reconciliation_state(anime)
+
+    assert changed is True
+    assert anime["anilist_reconciliation_status"] == "pending"
+    assert "anilist_metadata_checked_at" not in anime
+
+
 def test_pending_anilist_reconciliation_retries_without_checked_timestamp() -> None:
     now = datetime(2026, 6, 30, 0, 0, tzinfo=timezone.utc).timestamp()
     anime = {
@@ -2919,6 +3048,137 @@ def test_explicit_season_two_root_title_can_match_season_two_metadata(monkeypatc
     assert item["season_number"] == 2
     assert item["manual_verification_required"] is False
     assert item["provider_ids"] == {"anilist": "sakamoto-s2"}
+
+
+def test_metadata_match_score_uses_alias_and_romaji_title_values() -> None:
+    alias_context = {
+        "search_titles": ["Jujutsu Kaisen Shimetsu Kaiyuu - Zenpen"],
+        "year": None,
+        "season_number": None,
+        "part_number": None,
+        "local_episode_count": 0,
+    }
+    alias_result = {
+        "title": "JUJUTSU KAISEN Season 3: The Culling Game Part 1",
+        "aliases": ["Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen"],
+    }
+    romaji_context = {
+        "search_titles": ["Reincarnation no Kaben"],
+        "year": None,
+        "season_number": None,
+        "part_number": None,
+        "local_episode_count": 0,
+    }
+    romaji_result = {
+        "title": "Petals of Reincarnation",
+        "provider_title": {"romaji": "Reincarnation no Kaben", "english": "Petals of Reincarnation"},
+    }
+
+    assert app_state._metadata_match_score(alias_context, alias_result) >= 1.0
+    assert app_state._metadata_match_score(romaji_context, romaji_result) >= 1.0
+
+def test_part_title_overrides_episode_file_season_hint_for_cour_metadata(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Sakamoto.Days.S01E12.1080p.mkv"
+    media_file.write_bytes(b"")
+    part_two = root_scan_metadata("Sakamoto Days Part 2")
+    part_two.update(
+        {
+            "original_title": "SAKAMOTO DAYS (2025)",
+            "episodes": "11",
+            "season_number": 2,
+            "provider_ids": {"anilist": "sakamoto-part-2"},
+            "aliases": ["Sakamoto Days Part 2", "SAKAMOTO DAYS Cour 2", "Sakamoto Days"],
+        }
+    )
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [part_two])
+
+    item = app_state._imported_anime_item("SAKAMOTO DAYS Part 2", tmp_path, [media_file])
+
+    assert item["title"] == "Sakamoto Days Part 2"
+    assert item["season_number"] == 2
+    assert item["manual_verification_required"] is False
+    assert item["provider_ids"] == {"anilist": "sakamoto-part-2"}
+
+
+def test_zenpen_metadata_rejects_kouhen_neighbor(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Jujutsu.Kaisen.S03E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    kouhen = root_scan_metadata("JUJUTSU KAISEN Season 3: The Culling Game Part 2")
+    kouhen.update(
+        {
+            "original_title": "Jujutsu Kaisen: Shimetsu Kaiyuu - Kouhen",
+            "episodes": "12",
+            "season_number": 3,
+            "provider_ids": {"anilist": "jjk-kouhen"},
+            "aliases": ["Jujutsu Kaisen: Shimetsu Kaiyuu - Kouhen"],
+        }
+    )
+    zenpen = root_scan_metadata("JUJUTSU KAISEN Season 3: The Culling Game Part 1")
+    zenpen.update(
+        {
+            "original_title": "Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen",
+            "episodes": "12",
+            "season_number": 3,
+            "provider_ids": {"anilist": "jjk-zenpen"},
+            "aliases": ["Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen"],
+        }
+    )
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [kouhen, zenpen])
+
+    item = app_state._imported_anime_item("Jujutsu Kaisen Shimetsu Kaiyuu - Zenpen", tmp_path, [media_file])
+
+    assert item["original_title"] == "Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen"
+    assert item["manual_verification_required"] is False
+    assert item["provider_ids"] == {"anilist": "jjk-zenpen"}
+
+
+def test_root_import_prefers_anilist_poster_for_fallback_metadata_with_anilist_id(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Petals.of.Reincarnation.S01E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    offline = root_scan_metadata("Petals of Reincarnation")
+    offline.update(
+        {
+            "source": "anime-offline-database",
+            "original_title": "Reincarnation no Kaben",
+            "poster": "https://cdn.animenewsnetwork.com/petals.jpg",
+            "provider_ids": {"anilist": "179950", "mal": "59443"},
+        }
+    )
+    calls = []
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [offline])
+    monkeypatch.setattr(
+        app_state,
+        "search_anilist_by_id",
+        lambda anilist_id: calls.append(anilist_id)
+        or {
+            "title": "Petals of Reincarnation",
+            "original_title": "Reincarnation no Kaben",
+            "year": "2026",
+            "season_number": 1,
+            "source": "AniList",
+            "poster": "https://anilist.example/petals.jpg",
+            "provider_ids": {"anilist": "179950"},
+        },
+    )
+
+    item = app_state._imported_anime_item("Petals of Reincarnation", tmp_path, [media_file])
+
+    assert calls == ["179950"]
+    assert item["poster"] == "https://anilist.example/petals.jpg"
+    assert item["poster_source"] == "AniList"
+    assert item["provider_ids"]["anilist"] == "179950"
 
 
 def test_root_import_enriches_missing_poster_from_fallback_metadata_candidate(monkeypatch, tmp_path) -> None:

@@ -486,6 +486,32 @@ def _should_refresh_torrent_search(anime: dict[str, Any], now: float) -> bool:
     return True
 
 
+def _should_prefer_provider_poster(anime: dict[str, Any]) -> bool:
+    current_poster = str(anime.get("poster") or "").strip()
+    if not current_poster:
+        return True
+    poster_source = str(anime.get("poster_source") or "").strip().casefold()
+    if not poster_source or poster_source == "anilist":
+        return False
+    return str(anime.get("poster_status") or "").strip().casefold() not in {"ok", "repaired"}
+
+
+def _apply_poster_replacement(database: dict[str, Any], anime: dict[str, Any], replacement: dict[str, Any]) -> bool:
+    anime["poster"] = str(replacement.get("poster") or "")
+    anime["poster_source"] = _metadata_source_name(replacement)
+    _merge_provider_ids(anime, replacement)
+    anime["poster_checked_at"] = datetime.now(timezone.utc).isoformat()
+    anime["poster_status"] = "repaired"
+    anime.pop("poster_error", None)
+    _record_event(
+        database,
+        "metadata",
+        f"Repaired poster for {anime.get('title', 'anime')} from {anime['poster_source']}.",
+        anime,
+    )
+    return True
+
+
 def _should_attempt_periodic_dispatch(database: dict[str, Any], anime: dict[str, Any], now: float) -> bool:
     if anime.get("monitored") is False:
         return False
@@ -517,6 +543,11 @@ def _should_repair_poster(anime: dict[str, Any], now: float) -> bool:
 
 def _repair_anime_poster(database: dict[str, Any], anime: dict[str, Any]) -> bool:
     current_poster = str(anime.get("poster") or "").strip()
+    if _should_prefer_provider_poster(anime):
+        replacement = _alternate_poster_metadata(anime)
+        if replacement is not None:
+            return _apply_poster_replacement(database, anime, replacement)
+
     if current_poster and _poster_url_accessible(current_poster):
         anime["poster_checked_at"] = datetime.now(timezone.utc).isoformat()
         anime["poster_status"] = "ok"
@@ -530,18 +561,7 @@ def _repair_anime_poster(database: dict[str, Any], anime: dict[str, Any]) -> boo
             anime["poster_error"] = "Stored poster URL could not be loaded and no alternate provider poster matched."
         return True
 
-    anime["poster"] = str(replacement.get("poster") or "")
-    anime["poster_source"] = _metadata_source_name(replacement)
-    _merge_provider_ids(anime, replacement)
-    anime["poster_status"] = "repaired"
-    anime.pop("poster_error", None)
-    _record_event(
-        database,
-        "metadata",
-        f"Repaired poster for {anime.get('title', 'anime')} from {anime['poster_source']}.",
-        anime,
-    )
-    return True
+    return _apply_poster_replacement(database, anime, replacement)
 
 
 def _should_refresh_anilist_metadata(anime: dict[str, Any], now: float) -> bool:
@@ -672,6 +692,18 @@ def _enrich_metadata_poster_from_candidates(
     match: dict[str, Any],
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    anilist_id = _provider_id_value({"provider_ids": match.get("provider_ids", {})}, "anilist")
+    if anilist_id and _metadata_source_name(match) != "AniList":
+        try:
+            anilist_match = search_anilist_by_id(anilist_id)
+        except MetadataProviderError:
+            anilist_match = None
+        if _metadata_has_usable_poster(anilist_match):
+            enriched = dict(match)
+            enriched["poster"] = str(anilist_match.get("poster") or "")
+            enriched["poster_source"] = "AniList"
+            _merge_provider_ids(enriched, anilist_match)
+            return enriched
     if _metadata_has_usable_poster(match):
         return match
     poster_candidates = [candidate for candidate in candidates if _metadata_has_usable_poster(candidate)]
@@ -3118,9 +3150,13 @@ def _torrent_candidate_confidence(candidate: dict[str, Any], database: dict[str,
     reasons = ["candidate has a torrent URL"]
     preferred_resolution = _quality_resolution(anime)
     title = str(candidate.get("title") or "")
-    if not _candidate_title_matches_anime(candidate, anime):
+    title_match = _candidate_title_match(candidate, anime)
+    if not title_match:
         score -= 50
         reasons.append("torrent title does not match the selected anime title")
+    elif title_match[0] in {"alias", "romaji", "metadata"}:
+        score += 8
+        reasons.append(f"torrent title matches anime {title_match[0]} title {title_match[1]}")
     if preferred_resolution == "BD" and candidate.get("source_kind") == "bluray":
         score += 15
         reasons.append("matches BD preference")
@@ -3173,25 +3209,53 @@ def _torrent_candidate_confidence(candidate: dict[str, Any], database: dict[str,
 
 
 def _candidate_title_matches_anime(candidate: dict[str, Any], anime: dict[str, Any]) -> bool:
+    return bool(_candidate_title_match(candidate, anime))
+
+
+def _candidate_title_match(candidate: dict[str, Any], anime: dict[str, Any]) -> tuple[str, str] | None:
     title = str(candidate.get("title") or "").strip()
     if not title or str(candidate.get("category") or "") == "Manual":
-        return True
-    titles = []
-    for value in (anime.get("title"), anime.get("original_title")):
-        if str(value or "").strip():
-            titles.append(str(value).strip())
-    metadata_titles = anime.get("metadata_search_titles")
-    if isinstance(metadata_titles, list):
-        titles.extend(str(value).strip() for value in metadata_titles if str(value or "").strip())
+        return ("manual", "")
     seen = set()
-    for anime_title in titles:
+    for source, anime_title in _anime_confidence_title_values(anime):
         key = anime_title.casefold()
         if key in seen:
             continue
         seen.add(key)
         if torrent_title_matches(anime_title, title):
-            return True
-    return False
+            return source, anime_title
+    return None
+
+
+def _anime_confidence_title_values(anime: dict[str, Any]) -> list[tuple[str, str]]:
+    values: list[tuple[str, Any]] = [
+        ("selected", anime.get("title")),
+        ("romaji", anime.get("original_title")),
+        ("romaji", anime.get("romaji_title")),
+        ("selected", anime.get("english_title")),
+        ("alias", anime.get("native_title")),
+    ]
+    metadata_titles = anime.get("metadata_search_titles")
+    if isinstance(metadata_titles, list):
+        values.extend(("metadata", value) for value in metadata_titles)
+    aliases = anime.get("aliases")
+    if isinstance(aliases, list):
+        values.extend(("alias", value) for value in aliases)
+    provider_title = anime.get("provider_title")
+    if isinstance(provider_title, dict):
+        values.extend(
+            [
+                ("romaji", provider_title.get("romaji")),
+                ("selected", provider_title.get("english")),
+                ("alias", provider_title.get("native")),
+            ]
+        )
+    titles: list[tuple[str, str]] = []
+    for source, value in values:
+        title = str(value or "").strip()
+        if title:
+            titles.append((source, title))
+    return titles
 
 
 def _manual_torrent_release(anime: dict[str, Any], torrent_link: str, episode: str = "") -> tuple[dict[str, Any], str]:
@@ -4540,6 +4604,19 @@ def _update_imported_anime(existing: dict[str, Any], candidate: dict[str, Any]) 
     _refresh_library_state(existing)
 
 
+def _normalize_anilist_reconciliation_state(anime: dict[str, Any]) -> bool:
+    if anime.get("manual_verification_required"):
+        return False
+    source_name = _metadata_source_name(anime)
+    if source_name == "AniList" or _anilist_reconciliation_pending(anime):
+        return False
+    if source_name in {"anime-offline-database", "Kitsu", "TMDB"} or _provider_id_value(anime, "anilist"):
+        _mark_anilist_reconciliation_pending(anime, "Final AniList reconciliation is pending.")
+        anime.pop("anilist_metadata_checked_at", None)
+        return True
+    return False
+
+
 def _refresh_media_tags(library: list[dict[str, Any]], force: bool = False) -> dict[str, int]:
     summary = {"updated": 0, "skipped": 0, "unknown": 0}
     for anime in library:
@@ -4914,14 +4991,7 @@ def _best_metadata_match(match_context: dict[str, Any], results: list[dict[str, 
 def _metadata_match_score(match_context: dict[str, Any], result: dict[str, Any]) -> float:
     search_titles = match_context["search_titles"]
     normalized_search_titles = [_metadata_compare_value(title) for title in search_titles]
-    aliases = result.get("aliases", [])
-    if not isinstance(aliases, list):
-        aliases = []
-    weighted_values = [
-        (result.get("title", ""), 0.04),
-        (result.get("original_title", ""), 0.03),
-        *[(alias, 0.0) for alias in aliases],
-    ]
+    weighted_values = _metadata_confidence_title_values(result)
     scores = [
         _title_match_score(search_title, _metadata_compare_value(value)) + weight
         for search_title in normalized_search_titles
@@ -4937,15 +5007,48 @@ def _metadata_match_score(match_context: dict[str, Any], result: dict[str, Any])
         else:
             score -= min(abs(year_hint - result_year) * 0.08, 0.35)
 
+    part_hint = _part_hint_value(match_context.get("part_number"))
+    result_part = _metadata_part_hint(result)
+    part_matches = part_hint is not None and result_part is not None and part_hint == result_part
     season_hint = _season_hint_value(match_context.get("season_number"))
     result_season = _season_hint_value(result.get("season_number"))
     if season_hint is not None and result_season is not None:
         if season_hint == result_season:
             score += 0.08
+        elif not (part_matches and match_context.get("season_hint_source") == "episode_files"):
+            score -= 0.35
+    if part_hint is not None and result_part is not None:
+        if part_matches:
+            score += 0.08
         else:
             score -= 0.35
     return score
 
+
+def _metadata_confidence_title_values(result: dict[str, Any]) -> list[tuple[Any, float]]:
+    values: list[tuple[Any, float]] = [
+        (result.get("title", ""), 0.04),
+        (result.get("original_title", ""), 0.03),
+        (result.get("romaji_title", ""), 0.03),
+        (result.get("english_title", ""), 0.03),
+        (result.get("native_title", ""), 0.0),
+    ]
+    provider_title = result.get("provider_title")
+    if isinstance(provider_title, dict):
+        values.extend(
+            [
+                (provider_title.get("romaji"), 0.03),
+                (provider_title.get("english"), 0.03),
+                (provider_title.get("native"), 0.0),
+            ]
+        )
+    aliases = result.get("aliases", [])
+    if isinstance(aliases, list):
+        values.extend((alias, 0.0) for alias in aliases)
+    metadata_titles = result.get("metadata_search_titles", [])
+    if isinstance(metadata_titles, list):
+        values.extend((title, 0.0) for title in metadata_titles)
+    return values
 
 def _metadata_episode_count_compatible(match_context: dict[str, Any], metadata: Any) -> bool:
     if not isinstance(metadata, dict):
@@ -4962,9 +5065,18 @@ def _metadata_episode_count_compatible(match_context: dict[str, Any], metadata: 
 def _metadata_season_compatible(match_context: dict[str, Any], metadata: dict[str, Any]) -> bool:
     result_season = _season_hint_value(metadata.get("season_number"))
     context_season = _season_hint_value(match_context.get("season_number"))
+    result_part = _metadata_part_hint(metadata)
+    context_part = _part_hint_value(match_context.get("part_number"))
+    if context_part is not None and result_part is not None and context_part != result_part:
+        return False
+    part_matches = context_part is not None and result_part is not None and context_part == result_part
     if context_season is not None and result_season is not None:
+        if part_matches and match_context.get("season_hint_source") == "episode_files":
+            return True
         return context_season == result_season
     if context_season is None and result_season is not None and result_season > 1:
+        if part_matches:
+            return True
         return False
     return True
 
@@ -5165,6 +5277,7 @@ def _metadata_match_context(
         "year": _year_hint_from_title(import_title),
         "season_number": season_number,
         "season_hint_source": "title" if title_season is not None else ("episode_files" if season_number is not None else ""),
+        "part_number": _part_hint_from_title(import_title),
         "local_episode_count": local_episode_count,
     }
 
@@ -5215,6 +5328,48 @@ def _season_hint_from_title(value: str) -> int | None:
         return 2
     if re.search(r"\b(?:3rd|iii)\s+season\b", value, flags=re.IGNORECASE):
         return 3
+    return None
+
+
+def _metadata_part_hint(metadata: dict[str, Any]) -> int | None:
+    values: list[Any] = [
+        metadata.get("title"),
+        metadata.get("original_title"),
+    ]
+    aliases = metadata.get("aliases")
+    if isinstance(aliases, list):
+        values.extend(aliases)
+    for value in values:
+        part = _part_hint_from_title(str(value or ""))
+        if part is not None:
+            return part
+    return None
+
+
+def _part_hint_from_title(value: str) -> int | None:
+    normalized = _metadata_compare_value(value)
+    match = re.search(r"\b(?:part|cour)\s*(\d{1,2})\b", normalized)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*cour\b", normalized)
+    if match:
+        return int(match.group(1))
+    if re.search(r"\bzenpen\b", normalized) or "前編" in value:
+        return 1
+    if re.search(r"\bko?uhen\b", normalized) or "後編" in value:
+        return 2
+    return None
+
+
+def _part_hint_value(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        try:
+            part = int(value)
+        except ValueError:
+            return _part_hint_from_title(value)
+        return part if part > 0 else None
     return None
 
 
@@ -5476,6 +5631,8 @@ def _read_user_database() -> dict[str, Any]:
             anime["quality_resolution"] = _quality_resolution(anime)
             if str(anime.get("quality_profile") or "").strip().casefold().startswith("any "):
                 anime["quality_profile"] = _quality_profile_label(anime)
+            if _normalize_anilist_reconciliation_state(anime):
+                changed = True
             _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
             _normalize_torrent_search_state(anime)
             if _clear_stale_manual_selection(anime):

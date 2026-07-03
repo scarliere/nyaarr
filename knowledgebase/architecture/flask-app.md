@@ -49,14 +49,14 @@ Page renders are passive for external providers. Dashboard, Calendar, Manual Sel
 - `/activity` and `/activity/<section>`: Activity pages for queued, history, and blocked torrent rows.
 - `/settings`: Settings page for root folder configuration.
 - `/settings/root-folder`: POST endpoint that saves the anime root folder and scans it for local imports.
-- `/settings/root-folder/progress`: JSON endpoint polled by Settings while a root-folder scan is running.
+- `/settings/root-folder/progress`: JSON endpoint polled by Settings for visible scan progress and by the shared shell to refresh sidebar Anime badge counts when a background root-folder scan finishes.
 - `/settings/root-folder/delete`: POST endpoint that clears the saved anime root folder path.
 - `/settings/status`: JSON endpoint used by the shell to refresh missing required settings every 10 minutes.
 - `/system/status`: System status page with disk space, runtime details, uptime, and project links.
 
 ## Shared Sidebar Counts
 
-The shared sidebar in `nyaarr/templates/base.html` renders zero-count defaults on first paint, then fetches current counts from `/sidebar-counts`.
+The shared sidebar in `nyaarr/templates/base.html` renders zero-count defaults on first paint, then fetches current counts from `/sidebar-counts`. The shell also watches root-folder scan progress on every page and refreshes these counts when a background scan completes, so Anime, Manual Selection, and Metadata Review badges update even if the user left Settings.
 
 Counts shown:
 
