@@ -51,6 +51,53 @@ def test_completed_anime_does_not_refresh_torrent_search() -> None:
 
 
 
+
+def test_mark_torrent_search_pending_keeps_unmonitored_paused() -> None:
+    anime = missing_anime()
+    anime["monitored"] = False
+    anime["torrent_manual_selection"] = {"required": True}
+
+    app_state._mark_torrent_search_pending(anime)
+
+    assert anime["monitored"] is False
+    assert anime["torrent_manual_selection"] == {"required": False}
+    assert anime["torrent_search"]["strategy"] == "Torrent search paused because anime is unmonitored"
+    assert anime["torrent_search"]["candidates"] == []
+
+
+def test_add_existing_anime_preserves_unmonitored_preference(monkeypatch) -> None:
+    existing = {
+        "library_id": "anime-chiikawa",
+        "title": "Chiikawa",
+        "monitored": False,
+        "library_state": "Paused",
+        "episodes": "120",
+        "quality_resolution": "1080p",
+        "torrent_search": {"strategy": "Torrent search paused because anime is unmonitored", "candidates": []},
+        "torrent_manual_selection": {"required": False},
+    }
+    database = {"settings": {"root_folder": "C:/Anime"}, "anime": [existing], "events": []}
+    writes = []
+    calls = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", lambda *args, **kwargs: calls.append("dispatch"))
+
+    updated = app_state.add_anime_to_library(
+        {"library_id": "anime-chiikawa", "title": "Chiikawa", "episodes": "999", "season_number": 1},
+        {"query": "Chiikawa", "strategy": "initial", "candidates": [{"title": "new candidate"}], "notices": []},
+    )
+
+    assert updated is existing
+    assert updated["monitored"] is False
+    assert updated["library_state"] == "Paused"
+    assert updated["torrent_manual_selection"] == {"required": False}
+    assert updated["torrent_search"]["strategy"] == "Torrent search paused because anime is unmonitored"
+    assert updated["torrent_search"]["candidates"] == []
+    assert calls == []
+    assert writes == [database]
+
 def test_add_anime_queues_torrent_search_without_inline_external_work(monkeypatch) -> None:
     database = {"settings": {"root_folder": ""}, "anime": [], "events": []}
     writes = []
@@ -2515,6 +2562,33 @@ def test_submit_manual_magnet_dispatches_through_existing_queue_path(monkeypatch
     assert writes == [database]
 
 
+
+def test_submit_manual_magnet_refreshes_qbittorrent_queue_immediately(monkeypatch) -> None:
+    database = manual_database()
+    database["settings"]["download_client"] = {"implementation": "qbittorrent", "enabled": True, "category": "nyaarr"}
+    anime = database["anime"][0]
+    anime["torrent_search"] = {"candidates": [], "notices": []}
+    anime["torrent_manual_selection"] = {"required": True, "intervention_type": "no_candidates"}
+    writes = []
+    refreshes = []
+    magnet = "magnet:?xt=urn:btih:ABCDEF1234567890ABCDEF1234567890ABCDEF12&dn=Petals%20of%20Reincarnation%20-%2005"
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_refresh_download_queue", lambda db: refreshes.append(db) or True)
+
+    def fake_dispatch(db, item, forced_release=None):
+        item["download_queue"] = {"torrent_url": forced_release["torrent_url"], "status": "queued"}
+
+    monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", fake_dispatch)
+
+    success, message = app_state.assign_manual_torrent_url("anime-1", magnet, "5")
+
+    assert success is True
+    assert message == "Manual torrent link was sent to qBittorrent."
+    assert refreshes == [database]
+    assert writes == [database]
+
 def test_anime_detail_model_builds_sonarr_style_episode_rows(monkeypatch, tmp_path) -> None:
     media = tmp_path / "Petals.of.Reincarnation.S01E01.1080p.mkv"
     media.write_bytes(b"media")
@@ -3201,6 +3275,27 @@ def test_root_import_prefers_anilist_poster_for_fallback_metadata_with_anilist_i
     assert item["poster_source"] == "AniList"
     assert item["provider_ids"]["anilist"] == "179950"
 
+
+
+def test_metadata_zero_episode_result_does_not_match_folder_with_local_episodes() -> None:
+    metadata = root_scan_metadata("SANDA")
+    metadata["episodes"] = "0"
+
+    assert app_state._metadata_episode_count_compatible({"local_episode_count": 12}, metadata) is False
+
+
+def test_best_metadata_match_skips_zero_episode_sanda_candidate_for_local_season() -> None:
+    offline = root_scan_metadata("SANDA")
+    offline.update({"source": "anime-offline-database", "episodes": "0", "provider_ids": {}})
+    anilist = root_scan_metadata("SANDA")
+    anilist.update({"source": "AniList", "episodes": "12", "provider_ids": {"anilist": "sanda-anilist"}})
+
+    match = app_state._best_metadata_match(
+        {"search_titles": ["Sanda"], "local_episode_count": 12, "season_number": 1},
+        [offline, anilist],
+    )
+
+    assert match is anilist
 
 def test_root_import_enriches_missing_poster_from_fallback_metadata_candidate(monkeypatch, tmp_path) -> None:
     media_file = tmp_path / "SANDA.S01E01.1080p.mkv"

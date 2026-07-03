@@ -440,6 +440,7 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
     assert b"/anime/anime-1/episodes/manual-link" in response.data
     assert b'name="episode" value="2"' in response.data
     assert b"Magnet link or .torrent URL" in response.data
+    assert b"<th>Action</th>" not in response.data
 
 
 def test_download_client_save_json_returns_redirect(monkeypatch) -> None:

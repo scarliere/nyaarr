@@ -386,6 +386,9 @@ def _mark_torrent_search_not_needed(anime: dict[str, Any]) -> None:
 
 
 def _mark_torrent_search_pending(anime: dict[str, Any]) -> None:
+    if anime.get("monitored") is False:
+        _clear_download_plan_for_unmonitored(anime)
+        return
     if _download_need_satisfied(anime):
         _mark_torrent_search_not_needed(anime)
         return
@@ -1289,7 +1292,7 @@ def add_anime_to_library(anime: dict[str, Any], torrent_search: dict[str, Any], 
 
     library_item = {
         **anime,
-        "monitored": True,
+        "monitored": existing.get("monitored", True) if existing is not None else True,
         "library_state": "Monitored",
         "quality_resolution": _quality_resolution(anime),
         "quality_profile": _quality_profile_label(anime),
@@ -1302,7 +1305,9 @@ def add_anime_to_library(anime: dict[str, Any], torrent_search: dict[str, Any], 
     supplied_release, supplied_error = _supplied_add_torrent_release(library_item, supplied_torrent_link, database)
     if supplied_error:
         _append_torrent_notice(library_item, supplied_error)
-    if supplied_release:
+    if library_item.get("monitored") is False:
+        _clear_download_plan_for_unmonitored(library_item)
+    elif supplied_release:
         _queue_supplied_add_torrent(library_item, supplied_release)
     else:
         _queue_background_torrent_search(library_item)
@@ -1341,6 +1346,9 @@ def _supplied_add_torrent_release(
 
 
 def _queue_background_torrent_search(anime: dict[str, Any]) -> None:
+    if anime.get("monitored") is False:
+        _clear_download_plan_for_unmonitored(anime)
+        return
     anime["torrent_search"] = {
         "query": str(anime.get("title") or anime.get("original_title") or ""),
         "strategy": "Queued for background torrent search",
@@ -1378,6 +1386,7 @@ def assign_manual_torrent_url(library_id: str, torrent_link: str, episode: str =
     if isinstance(candidates, list) and all(_torrent_ignore_key(candidate) != _torrent_ignore_key(release) for candidate in candidates if isinstance(candidate, dict)):
         candidates.insert(0, release)
     _maybe_dispatch_torrent(database, anime, forced_release=release)
+    _refresh_manual_dispatch_queue(database, anime, release)
     _reopen_manual_selection_for_remaining_candidates(database, anime)
     _record_event(database, "torrent", f"User submitted manual torrent link for {anime.get('title', 'anime')}.", anime, release)
     _write_user_database(database)
@@ -1402,6 +1411,7 @@ def assign_manual_torrent(library_id: str, selection_key: str) -> tuple[bool, st
     release["confidence"] = score
     release["confidence_reasons"] = reasons + ["selected manually"]
     _maybe_dispatch_torrent(database, anime, forced_release=release)
+    _refresh_manual_dispatch_queue(database, anime, release)
     _reopen_manual_selection_for_remaining_candidates(database, anime)
     _record_event(database, "torrent", f"User selected manual torrent {release.get('title', 'selected torrent')}.", anime, release)
     _write_user_database(database)
@@ -1410,6 +1420,18 @@ def assign_manual_torrent(library_id: str, selection_key: str) -> tuple[bool, st
     updated_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
     notices = updated_search.get("notices") if isinstance(updated_search.get("notices"), list) else []
     return False, str(notices[-1]) if notices else "Selected torrent could not be queued."
+
+
+def _refresh_manual_dispatch_queue(database: dict[str, Any], anime: dict[str, Any], release: dict[str, Any]) -> None:
+    client_settings = database.get("settings", {}).get("download_client")
+    if not isinstance(client_settings, dict) or client_settings.get("implementation") != "qbittorrent" or not client_settings.get("enabled"):
+        return
+    release_url = str(release.get("torrent_url") or "")
+    if not release_url:
+        return
+    if not any(queue.get("torrent_url") == release_url for queue in _download_queue_items(anime)):
+        return
+    _refresh_download_queue(database)
 
 
 def reject_manual_torrent(library_id: str, selection_key: str) -> tuple[bool, str]:
@@ -2197,6 +2219,9 @@ def refresh_library_media_tags(force: bool = False) -> dict[str, int]:
 
 
 def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], forced_release: dict[str, Any] | None = None) -> None:
+    if anime.get("monitored") is False and forced_release is None:
+        _append_torrent_notice(anime, "No automatic download was queued because this anime is unmonitored.")
+        return
     completion = anime.get("completion") if isinstance(anime.get("completion"), dict) else {}
     if int(completion.get("missing_episodes") or 0) <= 0:
         _append_torrent_notice(anime, "No download was queued because all currently expected episodes are present.")
@@ -5083,6 +5108,9 @@ def _metadata_episode_count_compatible(match_context: dict[str, Any], metadata: 
         return False
     local_count = _int_value(match_context.get("local_episode_count"))
     expected_count = _expected_episode_count(metadata)
+    raw_expected_count = _int_value(metadata.get("episodes"))
+    if local_count is not None and local_count > 0 and raw_expected_count == 0:
+        return False
     if local_count is None or local_count <= 0 or expected_count is None:
         return True
     return local_count <= expected_count

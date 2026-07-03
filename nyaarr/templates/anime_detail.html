@@ -118,7 +118,6 @@
                 <th>Status</th>
                 <th>Quality</th>
                 <th>File</th>
-                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -131,9 +130,10 @@
                     <span class="episode-state {{ episode.tone }}">{{ episode.status }}{% if episode.progress is not none and episode.status not in ['Downloaded', 'Imported'] %} {{ episode.progress }}%{% endif %}</span>
                   </td>
                   <td>{{ episode.quality }}</td>
-                  <td>{% if episode.file %}<span title="{{ episode.path }}">{{ episode.file }}</span>{% else %}-{% endif %}</td>
                   <td>
-                    {% if episode.tone == "missing" %}
+                    {% if episode.file %}
+                      <span title="{{ episode.path }}">{{ episode.file }}</span>
+                    {% elif episode.tone == "missing" %}
                       <form class="manual-selection-action manual-link-form manual-episode-link-form anime-episode-link-form" action="{{ url_for('submit_anime_episode_manual_torrent_link', library_id=anime.library_id) }}" method="post">
                         <input type="hidden" name="episode" value="{{ episode.episode }}">
                         <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" aria-label="Torrent link for {{ episode.label }}" required>
