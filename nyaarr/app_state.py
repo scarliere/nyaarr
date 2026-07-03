@@ -1874,7 +1874,7 @@ def metadata_verification_model() -> dict[str, Any]:
     for anime in database.get("anime", []):
         if not isinstance(anime, dict) or not anime.get("manual_verification_required"):
             continue
-        candidates = anime.get("metadata_candidates") if isinstance(anime.get("metadata_candidates"), list) else []
+        candidates = _metadata_review_candidates(anime)
         items.append(
             {
                 "library_id": str(anime.get("library_id") or ""),
@@ -1965,7 +1965,7 @@ def apply_metadata_verification(library_id: str, selection_key: str) -> tuple[bo
     if not anime.get("manual_verification_required"):
         return False, "Anime does not need metadata verification."
 
-    stored_candidates = anime.get("metadata_candidates") if isinstance(anime.get("metadata_candidates"), list) else []
+    stored_candidates = _metadata_review_candidates(anime)
     if not any(_metadata_candidate_key(candidate) == selection_key for candidate in stored_candidates if isinstance(candidate, dict)):
         return False, "Selected metadata candidate was not found."
 
@@ -1979,6 +1979,8 @@ def apply_metadata_verification(library_id: str, selection_key: str) -> tuple[bo
         return False, f"Metadata search failed: {exc}"
 
     selected = next((result for result in results if _metadata_result_key(result) == selection_key or _metadata_candidate_key(result) == selection_key), None)
+    if selected is None:
+        selected = next((candidate for candidate in stored_candidates if isinstance(candidate, dict) and _metadata_candidate_key(candidate) == selection_key), None)
     if selected is None:
         return False, "Selected metadata candidate could not be refreshed from providers."
 
@@ -2000,6 +2002,27 @@ def apply_metadata_verification(library_id: str, selection_key: str) -> tuple[bo
     return True, message
 
 
+
+def _metadata_review_candidates(anime: dict[str, Any]) -> list[dict[str, Any]]:
+    stored = anime.get("metadata_candidates") if isinstance(anime.get("metadata_candidates"), list) else []
+    candidates = [candidate for candidate in stored if isinstance(candidate, dict)]
+    search_titles = anime.get("metadata_search_titles") if isinstance(anime.get("metadata_search_titles"), list) else []
+    search_titles = [str(title) for title in search_titles if str(title or "").strip()]
+    if not search_titles:
+        search_titles = _metadata_search_titles(str(anime.get("title") or anime.get("original_title") or ""))
+    cached = _resolved_metadata_cache_lookup(
+        {
+            "search_titles": search_titles,
+            "year": _year_value(anime.get("metadata_year_hint")),
+            "season_number": _season_hint_value(anime.get("metadata_season_hint")),
+            "local_episode_count": _local_episode_count(anime),
+        }
+    )
+    if isinstance(cached, dict):
+        cached_key = _metadata_candidate_key(cached)
+        if cached_key and all(_metadata_candidate_key(candidate) != cached_key for candidate in candidates):
+            candidates.insert(0, cached)
+    return candidates
 def _metadata_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
     aliases = candidate.get("aliases") if isinstance(candidate.get("aliases"), list) else []
     return {

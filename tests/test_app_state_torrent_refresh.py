@@ -1747,6 +1747,88 @@ def test_activity_queued_rows_include_flagged_resolution_actions() -> None:
     assert flagged["library_id"] == "anime-1"
     assert wanted_episodes == {"1", "2", "3"}
 
+
+def test_metadata_verification_model_includes_cached_anilist_candidate(monkeypatch) -> None:
+    offline = root_scan_metadata("Petals of Reincarnation")
+    offline.update({"source": "anime-offline-database", "provider_ids": {}})
+    cached = root_scan_metadata("Petals of Reincarnation")
+    cached.update({"source": "AniList", "provider_ids": {"anilist": "179950"}, "poster": "https://anilist.example/petals.jpg"})
+    database = {
+        "settings": {},
+        "anime": [
+            {
+                "library_id": "root-folder:petals",
+                "title": "Petals of Reincarnation",
+                "original_title": "Reincarnation no Kaben",
+                "episode_files": [f"C:/Anime/Petals/Petals.of.Reincarnation.S01E{episode:02d}.mkv" for episode in range(1, 14)],
+                "manual_verification_required": True,
+                "manual_verification_reason": "Ambiguous metadata match.",
+                "metadata_candidates": [app_state._metadata_candidate_preview([offline])[0]],
+                "metadata_search_titles": ["Petals of Reincarnation"],
+            }
+        ],
+    }
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: cached)
+
+    model = app_state.metadata_verification_model()
+
+    assert model["count"] == 1
+    assert [candidate["source"] for candidate in model["items"][0]["candidates"]] == ["AniList", "anime-offline-database"]
+    assert model["items"][0]["candidates"][0]["selection_key"] == "anilist:179950"
+
+
+def test_apply_metadata_verification_can_use_cached_anilist_candidate_when_live_search_lacks_it(monkeypatch) -> None:
+    offline = root_scan_metadata("Petals of Reincarnation")
+    offline.update({"source": "anime-offline-database", "provider_ids": {}})
+    cached = root_scan_metadata("Petals of Reincarnation")
+    cached.update(
+        {
+            "source": "AniList",
+            "provider_ids": {"anilist": "179950"},
+            "poster": "https://anilist.example/petals.jpg",
+            "episodes": "13",
+        }
+    )
+    database = {
+        "settings": {"root_folder": "C:/Anime"},
+        "events": [],
+        "anime": [
+            {
+                "library_id": "root-folder:petals",
+                "title": "Petals of Reincarnation",
+                "original_title": "Reincarnation no Kaben",
+                "episode_files": [f"C:/Anime/Petals/Petals.of.Reincarnation.S01E{episode:02d}.mkv" for episode in range(1, 14)],
+                "manual_verification_required": True,
+                "manual_verification_reason": "Ambiguous metadata match.",
+                "metadata_candidates": [app_state._metadata_candidate_preview([offline])[0]],
+                "metadata_search_titles": ["Petals of Reincarnation"],
+                "torrent_search": {"candidates": [], "notices": []},
+            }
+        ],
+    }
+    writes = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: cached)
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [offline])
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_sync_anime_nfo_file", lambda anime: None)
+
+    success, message = app_state.apply_metadata_verification("root-folder:petals", "anilist:179950")
+
+    anime = database["anime"][0]
+    assert success is True
+    assert message == "Verified metadata for Petals of Reincarnation."
+    assert anime["source"] == "Root Folder Scan + AniList"
+    assert anime["provider_ids"] == {"anilist": "179950"}
+    assert anime["episodes"] == "13"
+    assert anime["manual_verification_required"] is False
+    assert writes == [database]
+
 def test_metadata_verification_applies_selected_candidate_and_records_event(monkeypatch) -> None:
     selected = root_scan_metadata("Petals of Reincarnation")
     selection_key = app_state._metadata_result_key(selected)
