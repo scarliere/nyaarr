@@ -128,23 +128,16 @@ exit /b 0
 
 :create_desktop_shortcut
 call :step "Creating desktop shortcut: %SHORTCUT_PATH%"
-set "SHORTCUT_ICON_LOCATION=%SHORTCUT_ICON%"
+set "SHORTCUT_ICON_LOCATION=%SHORTCUT_ICON%,0"
 if not exist "%SHORTCUT_ICON%" set "SHORTCUT_ICON_LOCATION=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe,0"
 set "SHORTCUT_TARGET=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-set "SHORTCUT_ARGS=-NoProfile -ExecutionPolicy Bypass -File ""%START_SCRIPT%"""
-set "VBS=%TEMP%\nyaarr_create_shortcut_%RANDOM%%RANDOM%.vbs"
-> "%VBS%" echo Set shell = CreateObject("WScript.Shell")
->> "%VBS%" echo Set shortcut = shell.CreateShortcut(WScript.Arguments(0))
->> "%VBS%" echo shortcut.TargetPath = WScript.Arguments(1)
->> "%VBS%" echo shortcut.Arguments = WScript.Arguments(2)
->> "%VBS%" echo shortcut.WorkingDirectory = WScript.Arguments(3)
->> "%VBS%" echo shortcut.IconLocation = WScript.Arguments(4)
->> "%VBS%" echo shortcut.Description = "Start Nyaarr and open it in your browser"
->> "%VBS%" echo shortcut.Save
-cscript //nologo "%VBS%" "%SHORTCUT_PATH%" "%SHORTCUT_TARGET%" "%SHORTCUT_ARGS%" "%PROJECT_ROOT%" "%SHORTCUT_ICON_LOCATION%"
-set "VBS_EXIT=%ERRORLEVEL%"
-del "%VBS%" >nul 2>nul
-if not "%VBS_EXIT%"=="0" (
+set "NYAARR_SHORTCUT_PATH=%SHORTCUT_PATH%"
+set "NYAARR_SHORTCUT_TARGET=%SHORTCUT_TARGET%"
+set "NYAARR_SHORTCUT_START_SCRIPT=%START_SCRIPT%"
+set "NYAARR_SHORTCUT_WORKING_DIR=%PROJECT_ROOT%"
+set "NYAARR_SHORTCUT_ICON=%SHORTCUT_ICON_LOCATION%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$quote = [char]34; $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($env:NYAARR_SHORTCUT_PATH); $shortcut.TargetPath = $env:NYAARR_SHORTCUT_TARGET; $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + $quote + $env:NYAARR_SHORTCUT_START_SCRIPT + $quote; $shortcut.WorkingDirectory = $env:NYAARR_SHORTCUT_WORKING_DIR; $shortcut.IconLocation = $env:NYAARR_SHORTCUT_ICON; $shortcut.Description = 'Start Nyaarr and open it in your browser'; $shortcut.Save()"
+if errorlevel 1 (
     echo Failed to create desktop shortcut.
     exit /b 1
 )
