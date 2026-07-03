@@ -19,18 +19,18 @@ set "SHORTCUT_PATH=%DESKTOP%\Nyaarr.lnk"
 
 call :step "Installing Nyaarr from %PROJECT_ROOT%"
 call :find_python
-if not defined PYTHON_CMD (
+if not defined PYTHON_EXE (
     call :install_python_with_winget || goto :fail
     call :find_python
 )
-if not defined PYTHON_CMD (
+if not defined PYTHON_EXE (
     echo Python 3 is still unavailable after installation. Open a new terminal and rerun install.bat.
     goto :fail
 )
 
 if not exist "%VENV_PYTHON%" (
     call :step "Creating local virtual environment."
-    %PYTHON_CMD% -m venv "%VENV_DIR%"
+    "%PYTHON_EXE%" %PYTHON_ARGS% -m venv "%VENV_DIR%"
     if errorlevel 1 (
         echo Failed to create the virtual environment.
         goto :fail
@@ -81,20 +81,24 @@ echo [Nyaarr] %~1
 exit /b 0
 
 :find_python
-set "PYTHON_CMD="
+set "PYTHON_EXE="
+set "PYTHON_ARGS="
 py -3 --version >nul 2>nul
 if not errorlevel 1 (
-    set "PYTHON_CMD=py -3"
+    set "PYTHON_EXE=py"
+    set "PYTHON_ARGS=-3"
     exit /b 0
 )
 python --version 2>nul | findstr /R /C:"^Python 3" >nul
 if not errorlevel 1 (
-    set "PYTHON_CMD=python"
+    set "PYTHON_EXE=python"
+    set "PYTHON_ARGS="
     exit /b 0
 )
 python3 --version 2>nul | findstr /R /C:"^Python 3" >nul
 if not errorlevel 1 (
-    set "PYTHON_CMD=python3"
+    set "PYTHON_EXE=python3"
+    set "PYTHON_ARGS="
     exit /b 0
 )
 exit /b 0
