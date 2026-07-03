@@ -37,11 +37,13 @@ def release_group_from_title(title: str) -> str:
     return _release_group(title)
 
 
-def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
+def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] | None = None) -> dict[str, Any]:
     search_titles = _search_titles(anime)
     search_title = search_titles[0] if search_titles else ""
     season_number = _selected_season_number(anime)
     preferred_group = _local_release_group_preference(anime)
+    preferred_groups = _release_group_preferences(preferred_group, preferred_subbers)
+    search_preferred_groups = _release_group_preferences("", preferred_subbers)
     if not search_title:
         return {
             "query": "",
@@ -56,32 +58,37 @@ def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
     first_matched_search_title = ""
     matched_search_title = search_title
     for index, candidate_title in enumerate(search_titles):
-        try:
-            releases = search_nyaa_rss(candidate_title)
-        except TorrentFinderError as exc:
-            if index == 0:
-                return {
-                    "query": search_title,
-                    "strategy": "RSS search failed",
-                    "candidates": [],
-                    "notices": [str(exc)],
-                }
-            notices.append(str(exc))
-            continue
+        for query in _initial_search_queries(candidate_title, search_preferred_groups):
+            try:
+                releases = search_nyaa_rss(query)
+            except TorrentFinderError as exc:
+                if index == 0 and query == candidate_title:
+                    return {
+                        "query": search_title,
+                        "strategy": "RSS search failed",
+                        "candidates": [],
+                        "notices": [str(exc)],
+                    }
+                notices.append(str(exc))
+                continue
 
-        related_releases = [
-            release
-            for release in releases
-            if _title_matches(candidate_title, release["title"])
-            and _season_matches(season_number, release["title"])
-        ]
-        if related_releases:
+            related_releases = [
+                release
+                for release in releases
+                if _title_matches(candidate_title, release["title"])
+                and _season_matches(season_number, release["title"])
+            ]
+            if not related_releases:
+                continue
+
             if not first_related_releases:
                 first_related_releases = related_releases
                 first_matched_search_title = candidate_title
             matched_search_title = candidate_title
             if candidate_title != search_title:
                 notices.append(f"Used alternate title search: {candidate_title}.")
+            if query != candidate_title:
+                notices.append(f"Used preferred subber search: {query}.")
             if preferred_group and not any(
                 str(release.get("release_group") or "").casefold() == preferred_group.casefold()
                 for release in related_releases
@@ -91,6 +98,8 @@ def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
                 )
                 related_releases = []
                 continue
+            break
+        if related_releases:
             break
 
     if not related_releases and first_related_releases:
@@ -119,6 +128,7 @@ def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
                 related_releases,
                 missing_episodes,
                 notices,
+                search_preferred_groups,
             )
             added_count = len(related_releases) - before_count
             if added_count:
@@ -138,7 +148,7 @@ def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
             if added_batch_count:
                 notices.append(f"Loaded {added_batch_count} same-subber batch fallback candidate(s) before selection.")
 
-    candidates = _select_candidates(related_releases, anime)
+    candidates = _select_candidates(related_releases, anime, preferred_groups)
     strategy = _selection_strategy(candidates)
     if not candidates:
         notices.append("No batch or per-episode RSS candidates were found.")
@@ -149,7 +159,6 @@ def find_torrents_for_anime(anime: dict[str, Any]) -> dict[str, Any]:
         "candidates": candidates,
         "notices": notices,
     }
-
 def _search_titles(anime: dict[str, Any]) -> list[str]:
     titles: list[str] = []
     values = [anime.get("title"), anime.get("original_title")]
@@ -164,6 +173,39 @@ def _search_titles(anime: dict[str, Any]) -> list[str]:
             titles.append(title)
             seen.add(key)
     return titles
+
+def _release_group_preferences(local_group: str = "", preferred_subbers: list[str] | None = None) -> list[str]:
+    groups: list[str] = []
+    seen: set[str] = set()
+    for value in [local_group, *(preferred_subbers or [])]:
+        group = str(value or "").strip()
+        key = group.casefold()
+        if not group or group in {"Unknown", "Manual"} or key in seen:
+            continue
+        groups.append(group)
+        seen.add(key)
+    return groups
+
+
+def _initial_search_queries(search_title: str, preferred_groups: list[str]) -> list[str]:
+    queries = []
+    for group in preferred_groups:
+        queries.append(f"{group} {search_title}")
+        queries.append(f"{search_title} {group}")
+    queries.append(search_title)
+    return _unique_queries(queries)
+
+
+def _unique_queries(queries: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        normalized = str(query or "").strip()
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            unique.append(normalized)
+            seen.add(key)
+    return unique
 
 
 def search_nyaa_rss(query: str) -> list[dict[str, Any]]:
@@ -282,10 +324,18 @@ def _load_episode_search_releases(
     related_releases: list[dict[str, Any]],
     missing_episodes: set[int],
     notices: list[str],
+    preferred_groups: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     loaded_releases = list(related_releases)
     loaded_keys = {_release_identity(release) for release in loaded_releases}
-    episode_by_query = {f"{search_title} {episode:02d}": episode for episode in sorted(missing_episodes)}
+    episode_by_query: dict[str, int] = {}
+    for episode in sorted(missing_episodes):
+        queries = [f"{search_title} {episode:02d}"]
+        for group in preferred_groups or []:
+            queries.insert(0, f"{search_title} {group} {episode:02d}")
+            queries.insert(0, f"{group} {search_title} {episode:02d}")
+        for query in _unique_queries(queries):
+            episode_by_query[query] = episode
     for query, episode_releases, error in _search_nyaa_rss_queries(list(episode_by_query)):
         episode = episode_by_query[query]
         if error:
@@ -369,10 +419,15 @@ def _load_batch_search_releases(
     return loaded_releases
 
 
-def _select_candidates(releases: list[dict[str, Any]], anime: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _select_candidates(
+    releases: list[dict[str, Any]],
+    anime: dict[str, Any] | None = None,
+    preferred_groups: list[str] | None = None,
+) -> list[dict[str, Any]]:
     anime = anime or {}
     local_episode_count = _local_episode_count(anime)
     local_release_group = _local_release_group_preference(anime)
+    group_preferences = _release_group_preferences(local_release_group, preferred_groups)
     missing_episodes = _missing_episodes(anime)
     quality_preference = _quality_preference(anime)
     useful_releases = _preferred_quality_releases([
@@ -386,7 +441,7 @@ def _select_candidates(releases: list[dict[str, Any]], anime: dict[str, Any] | N
 
     batch_releases = [release for release in useful_releases if release["release_kind"] == "batch"]
     if local_episode_count == 0 and batch_releases:
-        preferred_group = _preferred_group(batch_releases, local_release_group)
+        preferred_group = _preferred_group(batch_releases, group_preferences)
         return _sort_releases(
             [release for release in batch_releases if release["release_group"] == preferred_group]
             or batch_releases
@@ -399,7 +454,7 @@ def _select_candidates(releases: list[dict[str, Any]], anime: dict[str, Any] | N
         and (not missing_episodes or release.get("episode") in missing_episodes)
     ]
     if episode_releases:
-        same_group = _episode_releases_from_consistent_group(episode_releases, missing_episodes, local_release_group)
+        same_group = _episode_releases_from_consistent_group(episode_releases, missing_episodes, group_preferences)
         fallback_batches = _same_subber_batch_fallback_releases(
             batch_releases,
             same_group,
@@ -413,7 +468,7 @@ def _select_candidates(releases: list[dict[str, Any]], anime: dict[str, Any] | N
             return _best_release_per_episode(same_group)[:24]
 
     if batch_releases:
-        preferred_group = _preferred_group(batch_releases, local_release_group)
+        preferred_group = _preferred_group(batch_releases, group_preferences)
         return _sort_releases(
             [release for release in batch_releases if release["release_group"] == preferred_group]
             or batch_releases
@@ -425,7 +480,7 @@ def _select_candidates(releases: list[dict[str, Any]], anime: dict[str, Any] | N
 def _episode_releases_from_consistent_group(
     episode_releases: list[dict[str, Any]],
     missing_episodes: set[int],
-    preferred_group: str = "",
+    preferred_groups: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for release in episode_releases:
@@ -443,7 +498,7 @@ def _episode_releases_from_consistent_group(
             continue
         ranked_groups.append(
             (
-                group == preferred_group,
+                _group_preference_rank(group, preferred_groups),
                 missing_episodes.issubset(covered) if missing_episodes else True,
                 len(covered_missing),
                 len(covered),
@@ -582,14 +637,22 @@ def _float_value(value: Any) -> float | None:
         return None
 
 
-def _preferred_group(releases: list[dict[str, Any]], preferred_group: str = "") -> str:
+def _preferred_group(releases: list[dict[str, Any]], preferred_groups: list[str] | None = None) -> str:
     groups = [release["release_group"] for release in releases if release.get("release_group")]
     if not groups:
         return "Unknown"
-    if preferred_group and preferred_group in groups:
-        return preferred_group
+    for preferred_group in preferred_groups or []:
+        if any(group.casefold() == preferred_group.casefold() for group in groups):
+            return preferred_group
     counts = Counter(groups)
     return counts.most_common(1)[0][0]
+
+
+def _group_preference_rank(group: str, preferred_groups: list[str] | None = None) -> int:
+    for index, preferred_group in enumerate(preferred_groups or []):
+        if group.casefold() == preferred_group.casefold():
+            return 1000 - index
+    return 0
 
 def _local_release_group_preference(anime: dict[str, Any]) -> str:
     groups = []
@@ -954,7 +1017,3 @@ def _int_child(item: ET.Element, tag: str) -> int:
         return int(value)
     except ValueError:
         return 0
-
-
-
-

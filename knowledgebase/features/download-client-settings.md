@@ -48,8 +48,6 @@ The qBittorrent form follows the same general Sonarr download-client shape:
 - Username
 - Password
 - Category
-- Recent Priority
-- Older Priority
 - Use SSL
 - Add Paused
 - Remote Path Mapping

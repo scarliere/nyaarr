@@ -62,6 +62,34 @@
             </div>
           </form>
         </dialog>
+        <section class="anime-detail-panel anime-preferences-panel">
+          <div class="section-heading compact">
+            <h2>Preferences</h2>
+          </div>
+          <form class="settings-form" action="{{ url_for('update_anime_preferences_route', library_id=anime.library_id) }}" method="post">
+            <div class="settings-field-grid">
+              <label>
+                <span>Quality</span>
+                <select name="quality_resolution">
+                  {% for option in ['Any', '1080p', '720p', 'BD'] %}
+                    <option value="{{ option }}" {% if option == anime.quality_resolution %}selected{% endif %}>{{ option }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                <span>Season</span>
+                <input name="season_number" type="number" min="1" step="1" value="{{ anime.season_number }}">
+              </label>
+            </div>
+            <div class="settings-checks">
+              <label><input name="monitored" type="checkbox" {% if anime.monitored %}checked{% endif %}> Monitored</label>
+            </div>
+            <button class="primary" type="submit">Save preferences</button>
+          </form>
+          <form class="settings-form" action="{{ url_for('delete_anime_route', library_id=anime.library_id) }}" method="post" onsubmit="return confirm('Remove this anime from Nyaarr? Local files will not be deleted.');">
+            <button class="danger" type="submit">Remove from library</button>
+          </form>
+        </section>
       </div>
     </div>
 
@@ -109,4 +137,3 @@
     </section>
   </section>
 {% endblock %}
-

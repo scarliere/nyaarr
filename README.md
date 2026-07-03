@@ -7,8 +7,8 @@ Nyaarr is a local-first anime library and download manager inspired by Sonarr. I
 ## Features
 
 - **Anime library dashboard** with poster cards, completion counts, airing status, and health notices.
-- **Metadata search** through AniList, anime-offline-database, Kitsu, and optional TMDB fallback.
-- **Root folder import** for existing anime folders, including metadata review for ambiguous matches.
+- **Metadata search** through AniList, anime-offline-database, Kitsu, and optional TMDB fallback, with AniList reconciled as the final source of truth.
+- **Root folder import** for existing anime folders, including metadata review for ambiguous matches and Jellyfin-compatible AniList `.nfo` files when identified.
 - **Nyaa.si torrent search** using RSS, release parsing, confidence scoring, and preferred subber support.
 - **qBittorrent integration** with paused safety inspection before downloads are resumed.
 - **Batch support** that selects only wanted episode files and stages imports into the existing anime folder.
@@ -51,7 +51,7 @@ Inside the app, configure:
 - Anime root folder
 - qBittorrent connection
 - Optional remote path mapping
-- Preferred subbers
+- Preferred subbers, defaulting to SubsPlease
 - Display timezone
 
 Optional environment variables:

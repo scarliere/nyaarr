@@ -12,6 +12,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections import Counter
+from xml.etree import ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -40,6 +41,7 @@ RESOLVED_METADATA_CACHE_PATH = Path(
 )
 DATABASE_SCHEMA_VERSION = 1
 DEFAULT_DISPLAY_TIMEZONE = "GMT+8"
+DEFAULT_PREFERRED_SUBBERS = ["SubsPlease"]
 DISPLAY_TIMEZONE_OPTIONS = [{"value": "UTC", "label": "UTC"}] + [
     {"value": f"GMT{offset:+d}", "label": f"GMT{offset:+d}"}
     for offset in range(-12, 15)
@@ -267,6 +269,7 @@ def run_periodic_maintenance_tick(*, include_airing: bool = True, include_extern
         "poster_repairs_deferred": 0,
         "anilist_metadata_refreshes": 0,
         "anilist_metadata_deferred": 0,
+        "nfo_files_written": 0,
         "last_external_request_at": None,
         "next_external_request_after": None,
         "last_run_at": datetime.now(timezone.utc).isoformat(),
@@ -324,6 +327,8 @@ def run_periodic_maintenance_tick(*, include_airing: bool = True, include_extern
                     summary["last_external_request_at"] = datetime.now(timezone.utc).isoformat()
             elif not include_external and _should_refresh_anilist_metadata(anime, now):
                 summary["anilist_metadata_deferred"] += 1
+            if _sync_anime_nfo_file(anime):
+                summary["nfo_files_written"] = int(summary.get("nfo_files_written") or 0) + 1
             if include_external and _should_repair_poster(anime, now):
                 if summary["poster_repairs"] >= MAX_POSTER_REPAIRS_PER_TICK:
                     summary["poster_repairs_deferred"] += 1
@@ -406,7 +411,7 @@ def _download_need_satisfied(anime: dict[str, Any]) -> bool:
 
 
 def _refresh_torrent_search(anime: dict[str, Any], database: dict[str, Any] | None = None) -> None:
-    torrent_search = find_torrents_for_anime(anime)
+    torrent_search = find_torrents_for_anime(anime, _preferred_subber_list(database or {}))
     torrent_search["checked_at"] = datetime.now(timezone.utc).isoformat()
     anime["torrent_search"] = torrent_search
     if database is not None:
@@ -464,6 +469,8 @@ def _normalize_unusable_torrent_candidates(database: dict[str, Any], anime: dict
 
 
 def _should_refresh_torrent_search(anime: dict[str, Any], now: float) -> bool:
+    if anime.get("monitored") is False:
+        return False
     if _download_need_satisfied(anime):
         return False
     completion = anime.get("completion") if isinstance(anime.get("completion"), dict) else {}
@@ -480,6 +487,8 @@ def _should_refresh_torrent_search(anime: dict[str, Any], now: float) -> bool:
 
 
 def _should_attempt_periodic_dispatch(database: dict[str, Any], anime: dict[str, Any], now: float) -> bool:
+    if anime.get("monitored") is False:
+        return False
     completion = anime.get("completion") if isinstance(anime.get("completion"), dict) else {}
     if int(completion.get("missing_episodes") or 0) <= 0:
         return False
@@ -538,6 +547,8 @@ def _repair_anime_poster(database: dict[str, Any], anime: dict[str, Any]) -> boo
 def _should_refresh_anilist_metadata(anime: dict[str, Any], now: float) -> bool:
     if not _anilist_metadata_search_titles(anime):
         return False
+    if _anilist_reconciliation_pending(anime) and _parse_checked_at(anime.get("anilist_metadata_checked_at")) is None:
+        return True
     checked_at = _parse_checked_at(anime.get("anilist_metadata_checked_at"))
     if checked_at is not None and now - checked_at < ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS:
         return False
@@ -554,10 +565,12 @@ def _refresh_anilist_metadata(database: dict[str, Any], anime: dict[str, Any], n
         match = _anilist_metadata_match(anime, match_context)
     except MetadataProviderError as exc:
         _mark_anilist_metadata_checked(anime, now, str(exc))
+        _mark_anilist_reconciliation_pending(anime, str(exc))
         return True
 
     if match is None:
         _mark_anilist_metadata_checked(anime, now, "No confident AniList metadata match was found.")
+        _mark_anilist_reconciliation_pending(anime, "No confident AniList metadata match was found.")
         return True
 
     _resolved_metadata_cache_store(match_context, match)
@@ -565,7 +578,9 @@ def _refresh_anilist_metadata(database: dict[str, Any], anime: dict[str, Any], n
     _apply_resolved_metadata(anime, match, match_context["search_titles"], "anilist-routine")
     anime["anilist_metadata_checked_at"] = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
     anime.pop("anilist_metadata_error", None)
+    _mark_anilist_reconciliation_resolved(anime)
     _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+    _sync_anime_nfo_file(anime)
     _record_event(database, "metadata", f"Updated {anime.get('title', 'anime')} metadata from AniList.", anime)
     return True
 
@@ -668,6 +683,40 @@ def _enrich_metadata_poster_from_candidates(
     enriched["poster_source"] = _metadata_source_name(poster_match)
     return enriched
 
+def _anilist_reconciliation_pending(anime: dict[str, Any]) -> bool:
+    return str(anime.get("anilist_reconciliation_status") or "").casefold() == "pending"
+
+
+def _mark_anilist_reconciliation_pending(anime: dict[str, Any], reason: str = "") -> None:
+    anime["anilist_reconciliation_status"] = "pending"
+    if reason:
+        anime["anilist_reconciliation_reason"] = reason
+
+
+def _mark_anilist_reconciliation_resolved(anime: dict[str, Any]) -> None:
+    anime["anilist_reconciliation_status"] = "reconciled"
+    anime["anilist_reconciliation_checked_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    anime.pop("anilist_reconciliation_reason", None)
+
+
+def _mark_anilist_reconciliation_for_current_metadata(anime: dict[str, Any]) -> None:
+    if _metadata_source_name(anime) == "AniList" and _provider_id_value(anime, "anilist"):
+        _mark_anilist_reconciliation_resolved(anime)
+        return
+    if not anime.get("manual_verification_required"):
+        _mark_anilist_reconciliation_pending(anime, "Final AniList reconciliation is pending.")
+        anime.pop("anilist_metadata_checked_at", None)
+
+
+def _mark_anilist_reconciliation_for_match(anime: dict[str, Any], match: dict[str, Any]) -> None:
+    if _metadata_source_name(match) == "AniList" and _provider_id_value({"provider_ids": match.get("provider_ids", {})}, "anilist"):
+        _mark_anilist_reconciliation_resolved(anime)
+        anime["anilist_metadata_checked_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return
+    _mark_anilist_reconciliation_pending(anime, f"Resolved from {_metadata_source_name(match)}; final AniList reconciliation is pending.")
+    anime.pop("anilist_metadata_checked_at", None)
+
+
 def _metadata_has_usable_poster(metadata: Any) -> bool:
     return isinstance(metadata, dict) and bool(str(metadata.get("poster") or "").strip())
 
@@ -715,8 +764,9 @@ def user_settings() -> dict[str, Any]:
     saved_settings = database.get("settings") if isinstance(database, dict) else {}
     settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
     settings.setdefault("download_client", _empty_download_client_settings())
-    settings.setdefault("preferred_subbers", [])
-    settings.setdefault("torrent_confidence_threshold", 70)
+    settings["preferred_subbers"] = _normalized_preferred_subbers(settings.get("preferred_subbers"))
+    settings["preferred_subbers_text"] = "\n".join(settings["preferred_subbers"])
+    settings["torrent_confidence_threshold"] = _torrent_confidence_threshold({"settings": settings})
     settings["timezone"] = _settings_timezone_value(settings.get("timezone"))
     settings["timezone_label"] = settings["timezone"]
     settings["timezone_options"] = display_timezone_options()
@@ -1004,6 +1054,60 @@ def delete_download_client() -> tuple[bool, str]:
     return True, "Download client configuration removed."
 
 
+def delete_anime(library_id: str) -> tuple[bool, str]:
+    database = _read_user_database()
+    anime = _find_database_anime(database, library_id)
+    if anime is None:
+        return False, "Anime was not found."
+    database["anime"] = [
+        item
+        for item in database.get("anime", [])
+        if not (isinstance(item, dict) and str(item.get("library_id") or "") == library_id)
+    ]
+    _record_event(database, "library", f"Removed {anime.get('title') or anime.get('original_title') or 'anime'} from the library.", anime)
+    _write_user_database(database)
+    return True, "Anime removed from the library. Local files were not deleted."
+
+
+def update_anime_preferences(library_id: str, form: dict[str, Any]) -> tuple[bool, str]:
+    database = _read_user_database()
+    anime = _find_database_anime(database, library_id)
+    if anime is None:
+        return False, "Anime was not found."
+    old_quality = _quality_resolution(anime)
+    old_season = _season_hint_value(anime.get("season_number")) or 1
+    anime["quality_resolution"] = _quality_resolution({"quality_resolution": form.get("quality_resolution")})
+    anime["quality_profile"] = _quality_profile_label(anime)
+    anime["season_number"] = max(_int_value(form.get("season_number")) or 1, 1)
+    anime["monitored"] = form.get("monitored") == "on"
+    _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+    if old_quality != _quality_resolution(anime) or old_season != anime["season_number"]:
+        cleanup = _clear_download_plan_for_metadata_override(anime)
+        _mark_torrent_search_pending(anime)
+        cleanup_message = f" Cleared {cleanup['removed_queues']} active queued download(s)." if cleanup["removed_queues"] else ""
+    else:
+        cleanup_message = ""
+    _record_event(database, "library", f"Updated anime preferences for {anime.get('title', 'anime')}.{cleanup_message}", anime)
+    _write_user_database(database)
+    return True, "Anime preferences saved." + cleanup_message
+
+
+def unblock_ignored_torrent(ignore_key: str) -> tuple[bool, str]:
+    key = str(ignore_key or "").strip()
+    if not key:
+        return False, "Blocked torrent key was missing."
+    database = _read_user_database()
+    ignored = database.get("ignored_torrents")
+    if not isinstance(ignored, list):
+        return False, "No blocked torrents are stored."
+    kept = [item for item in ignored if not (isinstance(item, dict) and str(item.get("key") or "") == key)]
+    if len(kept) == len(ignored):
+        return False, "Blocked torrent was not found."
+    database["ignored_torrents"] = kept
+    _record_event(database, "torrent", f"Unblocked torrent candidate {key}.")
+    _write_user_database(database)
+    return True, "Torrent candidate unblocked. It can be considered by future searches."
+
 def save_display_settings(form: dict[str, Any]) -> tuple[bool, str]:
     selected = _settings_timezone_value(form.get("timezone") if isinstance(form, dict) else None)
     database = _read_user_database()
@@ -1011,6 +1115,26 @@ def save_display_settings(form: dict[str, Any]) -> tuple[bool, str]:
     _record_event(database, "settings", f"Display timezone changed to {selected}.")
     _write_user_database(database)
     return True, f"Display timezone saved as {selected}."
+
+
+def save_torrent_preferences(form: dict[str, Any]) -> tuple[bool, str]:
+    database = _read_user_database()
+    settings = database.setdefault("settings", {})
+    if not isinstance(settings, dict):
+        settings = _empty_user_database()["settings"]
+        database["settings"] = settings
+    settings["preferred_subbers"] = _normalized_preferred_subbers(form.get("preferred_subbers") if isinstance(form, dict) else None)
+    threshold = _posted_confidence_threshold(form.get("torrent_confidence_threshold") if isinstance(form, dict) else None)
+    if threshold is None:
+        return False, "Enter a confidence threshold between 1 and 100."
+    settings["torrent_confidence_threshold"] = threshold
+    _record_event(
+        database,
+        "settings",
+        f"Torrent preferences saved: preferred subbers={', '.join(settings['preferred_subbers'])}; confidence threshold={threshold}.",
+    )
+    _write_user_database(database)
+    return True, "Torrent preferences saved."
 
 def test_download_client(form: dict[str, Any] | None = None) -> tuple[bool, str]:
     if form is not None and form.get("implementation"):
@@ -1133,6 +1257,7 @@ def add_anime_to_library(anime: dict[str, Any], torrent_search: dict[str, Any], 
     }
     _attach_existing_root_episode_files(database, library_item)
     _refresh_library_state(library_item, root_folder_configured=_root_folder_configured(database))
+    _mark_anilist_reconciliation_for_current_metadata(library_item)
     _refresh_airing_state(library_item)
     supplied_release, supplied_error = _supplied_add_torrent_release(library_item, supplied_torrent_link, database)
     if supplied_error:
@@ -1143,11 +1268,13 @@ def add_anime_to_library(anime: dict[str, Any], torrent_search: dict[str, Any], 
         _queue_background_torrent_search(library_item)
     if existing is not None:
         existing.update(library_item)
+        _sync_anime_nfo_file(existing)
         _record_event(database, "library", f"Updated anime library entry for {library_item.get('title', 'anime')}.", existing)
         _write_user_database(database)
         return existing
 
     library.append(library_item)
+    _sync_anime_nfo_file(library_item)
     _record_event(database, "library", f"Added {library_item.get('title', 'anime')} to the library.", library_item)
     _write_user_database(database)
     return library_item
@@ -1357,6 +1484,8 @@ def anime_detail_model(library_id: str) -> dict[str, Any] | None:
         "genres": anime.get("genres") if isinstance(anime.get("genres"), list) else [],
         "quality_profile": str(anime.get("quality_profile") or _quality_profile_label(anime)),
         "quality_resolution": _quality_resolution(anime),
+        "season_number": _season_hint_value(anime.get("season_number")) or 1,
+        "monitored": anime.get("monitored") is not False,
         "completion": anime.get("completion") if isinstance(anime.get("completion"), dict) else {},
         "local_path": str(anime.get("local_path") or ""),
         "torrent_strategy": str((anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}).get("strategy") or ""),
@@ -1724,9 +1853,11 @@ def apply_manual_anilist_id(library_id: str, anilist_id: str) -> tuple[bool, str
     anime["manual_anilist_id"] = selected_id
     anime["anilist_metadata_checked_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     anime.pop("anilist_metadata_error", None)
+    _mark_anilist_reconciliation_resolved(anime)
     cleanup = _clear_download_plan_for_metadata_override(anime)
     _refresh_media_tag(anime)
     _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+    _sync_anime_nfo_file(anime)
     _mark_torrent_search_pending(anime)
     message = f"Updated {anime.get('title', 'anime')} from AniList ID {selected_id}. Cleared {cleanup['removed_queues']} queued download(s)."
     _record_event(database, "metadata", message, anime)
@@ -1783,6 +1914,7 @@ def apply_metadata_verification(library_id: str, selection_key: str) -> tuple[bo
     _apply_resolved_metadata(anime, selected, search_titles, "manual")
     _refresh_media_tag(anime)
     _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+    _sync_anime_nfo_file(anime)
     _mark_torrent_search_pending(anime)
     message = f"Verified metadata for {anime.get('title', 'anime')}."
     _record_event(database, "metadata", message, anime)
@@ -1915,6 +2047,8 @@ def _activity_row(
         "status": str(torrent.get("status") or ("blocked" if blocked else "")),
         "library_id": str(anime.get("library_id") or torrent.get("anime_library_id") or ""),
         "can_resolve": not blocked and torrent.get("status") == "flagged",
+        "can_unblock": blocked and bool(torrent.get("key")),
+        "ignore_key": str(torrent.get("key") or ""),
     }
 
 
@@ -2671,6 +2805,7 @@ def _import_completed_torrent(
     queue["import_status"] = "imported"
     _refresh_media_tag(anime)
     _refresh_library_state(anime)
+    _sync_anime_nfo_file(anime)
     return True
 
 
@@ -3015,9 +3150,6 @@ def _torrent_candidate_confidence(candidate: dict[str, Any], database: dict[str,
     if preferred_subbers and release_group.casefold() in preferred_subbers:
         score += 15
         reasons.append("release group is prioritized")
-    elif preferred_subbers:
-        score -= 8
-        reasons.append("release group is not prioritized")
     try:
         seeders = int(candidate.get("seeders") or 0)
     except (TypeError, ValueError):
@@ -3173,19 +3305,45 @@ def _local_release_group_preference(anime: dict[str, Any]) -> str:
     return Counter(groups).most_common(1)[0][0]
 
 def _preferred_subbers(database: dict[str, Any]) -> set[str]:
+    return {subber.casefold() for subber in _preferred_subber_list(database)}
+
+
+def _preferred_subber_list(database: dict[str, Any]) -> list[str]:
     settings = database.get("settings") if isinstance(database.get("settings"), dict) else {}
-    subbers = settings.get("preferred_subbers") if isinstance(settings, dict) else []
-    if not isinstance(subbers, list):
-        return set()
-    return {str(subber).strip().casefold() for subber in subbers if str(subber).strip()}
+    return _normalized_preferred_subbers(settings.get("preferred_subbers") if isinstance(settings, dict) else None)
+
+
+def _normalized_preferred_subbers(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_values = re.split(r"[,\n]", value)
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = []
+    preferred: list[str] = []
+    seen: set[str] = set()
+    for item in [*DEFAULT_PREFERRED_SUBBERS, *raw_values]:
+        subber = str(item or "").strip()
+        key = subber.casefold()
+        if not subber or key in seen:
+            continue
+        preferred.append(subber)
+        seen.add(key)
+    return preferred or list(DEFAULT_PREFERRED_SUBBERS)
+
+
+def _posted_confidence_threshold(value: Any) -> int | None:
+    try:
+        threshold = int(str(value or "").strip())
+    except ValueError:
+        return None
+    return threshold if 1 <= threshold <= 100 else None
 
 
 def _torrent_confidence_threshold(database: dict[str, Any]) -> int:
     settings = database.get("settings") if isinstance(database.get("settings"), dict) else {}
-    try:
-        return int(settings.get("torrent_confidence_threshold") or 70)
-    except (TypeError, ValueError):
-        return 70
+    threshold = _posted_confidence_threshold(settings.get("torrent_confidence_threshold") if isinstance(settings, dict) else None)
+    return threshold if threshold is not None else 70
 
 
 def _set_manual_selection_required(
@@ -3705,6 +3863,7 @@ def _import_root_folder_candidates(database: dict[str, Any], root_folder: Path, 
             summary["manual_verification"] += 1
         else:
             summary["verified"] += 1
+            _sync_anime_nfo_file(stored_item)
         _mark_torrent_search_pending(stored_item)
         _update_root_scan_progress(
             phase="Importing",
@@ -4114,6 +4273,10 @@ def _apply_resolved_metadata(
     search_titles: list[str],
     resolution_source: str,
 ) -> dict[str, Any]:
+    existing_poster = str(item.get("poster") or "").strip()
+    match_poster = str(match.get("poster") or "").strip()
+    poster = match_poster or existing_poster
+    poster_source = match.get("poster_source", _metadata_source_name(match)) if match_poster else str(item.get("poster_source") or "")
     item.update(
         {
             "title": match["title"],
@@ -4129,8 +4292,8 @@ def _apply_resolved_metadata(
             "source": f"Root Folder Scan + {_metadata_source_name(match)}",
             "rating": match["rating"],
             "synopsis": match["synopsis"],
-            "poster": match["poster"],
-            "poster_source": match.get("poster_source", _metadata_source_name(match)) if str(match.get("poster") or "").strip() else "",
+            "poster": poster,
+            "poster_source": poster_source,
             "air_date": match.get("air_date", ""),
             "next_airing_at": match.get("next_airing_at", ""),
             "airing_episode": match.get("airing_episode", ""),
@@ -4145,6 +4308,7 @@ def _apply_resolved_metadata(
     )
     item["torrent_search"]["query"] = match["title"]
     item["torrent_search"]["notices"] = [f"Imported from root folder and matched to {match['source']} metadata."]
+    _mark_anilist_reconciliation_for_match(item, match)
     return item
 
 
@@ -5297,7 +5461,7 @@ def _read_user_database() -> dict[str, Any]:
         if isinstance(database["settings"].get("download_client"), dict):
             for key, value in _empty_download_client_settings().items():
                 database["settings"]["download_client"].setdefault(key, value)
-        database["settings"].setdefault("preferred_subbers", [])
+        database["settings"]["preferred_subbers"] = _normalized_preferred_subbers(database["settings"].get("preferred_subbers"))
         database["settings"].setdefault("torrent_confidence_threshold", 70)
         database["settings"]["timezone"] = _settings_timezone_value(database["settings"].get("timezone"))
         if not isinstance(database.get("ignored_torrents"), list):
@@ -5321,7 +5485,78 @@ def _read_user_database() -> dict[str, Any]:
         return database
 
 
+def _sync_anime_nfo_files(database: dict[str, Any]) -> int:
+    library = database.get("anime") if isinstance(database.get("anime"), list) else []
+    written = 0
+    for anime in library:
+        if isinstance(anime, dict) and _sync_anime_nfo_file(anime):
+            written += 1
+    return written
+
+
+def _sync_anime_nfo_file(anime: dict[str, Any]) -> bool:
+    anilist_id = _provider_id_value(anime, "anilist")
+    if not anilist_id:
+        return False
+    target = _anime_nfo_path(anime)
+    if target is None:
+        return False
+    try:
+        content = _anime_nfo_xml(anime, anilist_id)
+        if target.exists() and target.read_text(encoding="utf-8") == content:
+            return False
+        temp_path = target.with_suffix(target.suffix + ".tmp")
+        temp_path.write_text(content, encoding="utf-8")
+        os.replace(temp_path, target)
+        return True
+    except OSError:
+        return False
+
+
+def _anime_nfo_path(anime: dict[str, Any]) -> Path | None:
+    local_path_value = str(anime.get("local_path") or "").strip()
+    if not local_path_value:
+        return None
+    local_path = Path(local_path_value)
+    if local_path.exists() and local_path.is_dir():
+        return local_path / "tvshow.nfo"
+    if local_path.exists() and local_path.is_file():
+        return local_path.with_suffix(".nfo")
+    return None
+
+
+def _anime_nfo_xml(anime: dict[str, Any], anilist_id: str) -> str:
+    root = ET.Element("tvshow")
+    _nfo_text(root, "title", anime.get("title"))
+    _nfo_text(root, "originaltitle", anime.get("original_title"))
+    unique_id = ET.SubElement(root, "uniqueid", {"type": "anilist", "default": "true"})
+    unique_id.text = anilist_id
+    _nfo_text(root, "id", f"anilist:{anilist_id}")
+    _nfo_text(root, "plot", anime.get("synopsis"))
+    _nfo_text(root, "premiered", anime.get("air_date"))
+    year = _year_value(anime.get("year"))
+    if year is not None:
+        _nfo_text(root, "year", str(year))
+    _nfo_text(root, "status", anime.get("status"))
+    _nfo_text(root, "studio", anime.get("studio"))
+    for genre in anime.get("genres", []) if isinstance(anime.get("genres"), list) else []:
+        _nfo_text(root, "genre", genre)
+    poster = str(anime.get("poster") or "").strip()
+    if poster:
+        thumb = ET.SubElement(root, "thumb", {"aspect": "poster"})
+        thumb.text = poster
+    ET.indent(root, space="  ")
+    return ET.tostring(root, encoding="unicode", xml_declaration=False) + "\n"
+
+
+def _nfo_text(root: ET.Element, tag: str, value: Any) -> None:
+    text = str(value or "").strip()
+    if not text or text == "Unknown":
+        return
+    ET.SubElement(root, tag).text = text
+
 def _write_user_database(database: dict[str, Any]) -> None:
+    _sync_anime_nfo_files(database)
     with _USER_DATABASE_LOCK:
         USER_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
         temp_path = USER_DATABASE_PATH.with_suffix(".json.tmp")
@@ -5341,7 +5576,7 @@ def _empty_user_database() -> dict[str, Any]:
         "settings": {
             "root_folder": "",
             "download_client": _empty_download_client_settings(),
-            "preferred_subbers": [],
+            "preferred_subbers": list(DEFAULT_PREFERRED_SUBBERS),
             "torrent_confidence_threshold": 70,
             "timezone": DEFAULT_DISPLAY_TIMEZONE,
         },
@@ -5738,45 +5973,5 @@ def _schedule_snapshot(anime: dict[str, Any]) -> tuple[Any, ...]:
         anime.get("airing_schedule_checked_at"),
         anime.get("airing_schedule_error"),
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

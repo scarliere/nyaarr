@@ -503,3 +503,30 @@ def test_batch_fallback_candidate_scores_through_normal_confidence() -> None:
 
     assert score >= 70
     assert "same-subber batch can target stalled or low-seed missing episodes" in reasons
+
+
+def test_find_torrents_tries_preferred_subber_query_before_generic(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    item = anime(progress_target=1)
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        calls.append(query)
+        if query in {"SubsPlease Petals of Reincarnation", "SubsPlease Petals of Reincarnation 01"}:
+            return [release("SubsPlease", 1, seeders=5)]
+        return []
+
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
+    monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
+
+    result = torrent_finder.find_torrents_for_anime(item, ["SubsPlease"])
+
+    assert calls[0] == "SubsPlease Petals of Reincarnation"
+    assert result["candidates"][0]["release_group"] == "SubsPlease"
+
+
+def test_episode_selection_prefers_configured_subber_without_local_history() -> None:
+    releases = [release("HighSeeds", 1, seeders=500), release("SubsPlease", 1, seeders=5)]
+
+    candidates = torrent_finder._select_candidates(releases, anime(progress_target=1), ["SubsPlease"])
+
+    assert [candidate["release_group"] for candidate in candidates] == ["SubsPlease"]

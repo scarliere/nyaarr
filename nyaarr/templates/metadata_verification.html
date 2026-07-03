@@ -66,6 +66,13 @@
             </div>
           </div>
         </div>
+        <form class="metadata-verification-action settings-form" action="{{ url_for('metadata_verification_anilist_id') }}" method="post">
+          <input type="hidden" name="library_id" value="{{ item.library_id }}">
+          <div class="folder-input-row">
+            <input name="anilist_id" type="number" min="1" step="1" placeholder="AniList ID">
+            <button type="submit">Apply AniList ID</button>
+          </div>
+        </form>
         <div class="activity-table-wrap">
           <table class="activity-table manual-selection-table">
             <thead>
@@ -140,6 +147,3 @@
     });
   </script>
 {% endblock %}
-
-
-

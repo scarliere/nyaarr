@@ -16,6 +16,7 @@ from .app_state import (
     anime_detail_model,
     anime_library,
     calendar_model,
+    delete_anime,
     delete_download_client,
     delete_root_folder,
     display_timezone_options,
@@ -34,9 +35,12 @@ from .app_state import (
     root_folder_scan_progress,
     save_display_settings,
     save_download_client,
+    save_torrent_preferences,
     save_root_folder,
     sidebar_counts,
     test_download_client,
+    unblock_ignored_torrent,
+    update_anime_preferences,
     verify_superadmin_login,
     user_settings,
 )
@@ -173,6 +177,22 @@ def create_app() -> Flask:
             return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
         return redirect(redirect_url)
 
+    @app.post("/anime/<path:library_id>/preferences")
+    def update_anime_preferences_route(library_id: str):
+        success, message = update_anime_preferences(library_id, request.form)
+        redirect_url = url_for("anime_detail", library_id=library_id, anilist_saved="1" if success else "0", anilist_message=message)
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
+
+    @app.post("/anime/<path:library_id>/delete")
+    def delete_anime_route(library_id: str):
+        success, message = delete_anime(library_id)
+        redirect_url = url_for("anime_list", message=message, deleted="1" if success else "0")
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
+
     @app.get("/anime/manual-selection")
     def manual_selection():
         return render_template(
@@ -252,6 +272,15 @@ def create_app() -> Flask:
             request.form.get("library_id", ""),
             request.form.get("selection_key", ""),
         )
+        redirect_url = url_for("metadata_verification", selected="1" if success else "0", message=message)
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
+
+    @app.post("/anime/metadata-verification/anilist-id")
+    def metadata_verification_anilist_id():
+        library_id = request.form.get("library_id", "")
+        success, message = apply_manual_anilist_id(library_id, request.form.get("anilist_id", ""))
         redirect_url = url_for("metadata_verification", selected="1" if success else "0", message=message)
         if _wants_json_response():
             return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
@@ -346,6 +375,7 @@ def create_app() -> Flask:
             active_page="settings",
             download_client_summary=_download_client_summary_from_query(),
             display_summary=_display_summary_from_query(),
+            torrent_summary=_torrent_preferences_summary_from_query(),
             import_summary=_import_summary_from_query(),
             root_folder_missing=root_folder_missing(),
             settings=user_settings(),
@@ -359,6 +389,7 @@ def create_app() -> Flask:
             active_page="settings",
             download_client_summary=_download_client_summary_from_query(),
             display_summary=_display_summary_from_query(),
+            torrent_summary=_torrent_preferences_summary_from_query(),
             import_summary=_import_summary_from_query(),
             root_folder_missing=root_folder_missing(),
             settings=user_settings(),
@@ -472,6 +503,14 @@ def create_app() -> Flask:
             return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
         return redirect(redirect_url)
 
+    @app.post("/settings/torrent-preferences")
+    def update_torrent_preferences():
+        success, message = save_torrent_preferences(request.form)
+        redirect_url = url_for("settings", torrent_saved="1" if success else "0", torrent_message=message)
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
+
     @app.post("/settings/download-client")
     def update_download_client():
         success, message = save_download_client(request.form)
@@ -548,6 +587,14 @@ def create_app() -> Flask:
         if _wants_json_response():
             return jsonify({"ok": success, "message": message, "redirect_url": url_for("dashboard")})
         return redirect(url_for("anime_list"))
+
+    @app.post("/torrents/blocked/unblock")
+    def unblock_blocked_torrent_route():
+        success, message = unblock_ignored_torrent(request.form.get("ignore_key", ""))
+        redirect_url = url_for("activity", section="blocked")
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
 
     return app
 
@@ -729,24 +776,17 @@ def _download_client_summary_from_query() -> dict[str, str | bool] | None:
     }
 
 
+def _torrent_preferences_summary_from_query() -> dict[str, str | bool] | None:
+    message = request.args.get("torrent_message")
+    if not message:
+        return None
+    return {
+        "ok": request.args.get("torrent_saved") == "1",
+        "message": message,
+    }
+
 def _posted_count(value: str | None) -> int:
     try:
         return max(int(value or 0), 0)
     except ValueError:
         return 0
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

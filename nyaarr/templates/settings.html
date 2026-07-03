@@ -36,6 +36,12 @@
         <strong>{{ display_summary.message }}</strong>
       </div>
     {% endif %}
+
+    {% if torrent_summary %}
+      <div class="settings-alert {% if torrent_summary.ok %}ok{% else %}warn{% endif %}">
+        <strong>{{ torrent_summary.message }}</strong>
+      </div>
+    {% endif %}
     <section class="settings-panel">
       <div class="section-heading">
         <h2>Anime root folder</h2>
@@ -82,6 +88,19 @@
         </select>
         <p>All displayed dates and times use this timezone. Stored metadata stays in UTC.</p>
         <button class="primary" type="submit">Save display</button>
+      </form>
+    </section>
+    <section class="settings-panel">
+      <div class="section-heading">
+        <h2>Torrent preferences</h2>
+      </div>
+      <form class="settings-form" action="{{ url_for('update_torrent_preferences') }}" method="post">
+        <label for="preferred-subbers">Preferred subbers</label>
+        <textarea id="preferred-subbers" name="preferred_subbers" rows="4" placeholder="SubsPlease">{{ settings.preferred_subbers_text }}</textarea>
+        <p>Nyaarr searches these release groups first. SubsPlease is kept as the default preferred subber.</p>
+        <label for="torrent-confidence-threshold">Automatic confidence threshold</label>
+        <input id="torrent-confidence-threshold" name="torrent_confidence_threshold" type="number" min="1" max="100" value="{{ settings.torrent_confidence_threshold }}">
+        <button class="primary" type="submit">Save torrent preferences</button>
       </form>
     </section>
     <section class="settings-panel">
@@ -182,14 +201,6 @@
           <label>
             <span>Local Path</span>
             <input name="local_path" type="text" value="{{ download_client.local_path }}" placeholder="D:\Anime">
-          </label>
-          <label>
-            <span>Recent Priority</span>
-            <input name="recent_priority" type="text" value="{{ download_client.recent_priority or 'Last' }}">
-          </label>
-          <label>
-            <span>Older Priority</span>
-            <input name="older_priority" type="text" value="{{ download_client.older_priority or 'Last' }}">
           </label>
         </div>
 
@@ -447,7 +458,3 @@
     }
   </script>
 {% endblock %}
-
-
-
-

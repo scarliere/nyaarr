@@ -46,7 +46,7 @@
               {% if activity.section != 'history' %}<th>Time Left</th>{% endif %}
               <th>Progress</th>
               {% if activity.section == 'history' %}<th>Date Completed</th>{% endif %}
-              {% if activity.section == 'queued' %}<th>Action</th>{% endif %}
+              {% if activity.section != 'history' %}<th>Action</th>{% endif %}
             </tr>
           </thead>
           <tbody data-activity-rows>
@@ -66,12 +66,16 @@
                   </div>
                 </td>
                 {% if activity.section == 'history' %}<td>{{ row.date_completed }}</td>{% endif %}
-                {% if activity.section == 'queued' %}
+                {% if activity.section != 'history' %}
                   <td>
-                    {% if row.can_resolve and row.library_id %}
+                    {% if activity.section == 'queued' and row.can_resolve and row.library_id %}
                       <div class="activity-actions">
                         <form action="{{ url_for('allow_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button type="submit">Allow</button></form>
                         <form action="{{ url_for('reject_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button class="danger" type="submit">Reject</button></form>
+                      </div>
+                    {% elif activity.section == 'blocked' and row.can_unblock and row.ignore_key %}
+                      <div class="activity-actions">
+                        <form action="{{ url_for('unblock_blocked_torrent_route') }}" method="post"><input type="hidden" name="ignore_key" value="{{ row.ignore_key }}"><button type="submit">Unblock</button></form>
                       </div>
                     {% endif %}
                   </td>
@@ -80,7 +84,7 @@
             {% else %}
               {% if activity.description == 'Loading activity.' %}
                 <tr>
-                  <td colspan="{% if activity.section == 'queued' %}7{% else %}6{% endif %}" class="activity-empty activity-loading-cell">
+                  <td colspan="{% if activity.section != 'history' %}7{% else %}6{% endif %}" class="activity-empty activity-loading-cell">
                     <div class="table-loading-card" role="status" aria-live="polite">
                       <strong>Loading {{ activity.label|lower }} table</strong>
                       <span>Fetching the latest Activity rows.</span>
@@ -94,7 +98,7 @@
                 </tr>
               {% else %}
                 <tr>
-                  <td colspan="{% if activity.section == 'queued' %}7{% else %}6{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
+                  <td colspan="{% if activity.section != 'history' %}7{% else %}6{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
                 </tr>
               {% endif %}
             {% endfor %}
@@ -161,9 +165,27 @@
 
         function actionCell(row) {
           const cell = document.createElement("td");
-          if (!row.can_resolve || !row.library_id) return cell;
           const wrapper = document.createElement("div");
           wrapper.className = "activity-actions";
+          if (section === "blocked") {
+            if (!row.can_unblock || !row.ignore_key) return cell;
+            const form = document.createElement("form");
+            const input = document.createElement("input");
+            const button = document.createElement("button");
+            form.method = "post";
+            form.action = "/torrents/blocked/unblock";
+            input.type = "hidden";
+            input.name = "ignore_key";
+            input.value = row.ignore_key;
+            button.type = "submit";
+            button.textContent = "Unblock";
+            form.appendChild(input);
+            form.appendChild(button);
+            wrapper.appendChild(form);
+            cell.appendChild(wrapper);
+            return cell;
+          }
+          if (!row.can_resolve || !row.library_id) return cell;
           for (const action of ["allow", "reject"]) {
             const form = document.createElement("form");
             const input = document.createElement("input");
@@ -222,7 +244,7 @@
           if (section !== "history") tableRow.appendChild(textCell(row.time_left));
           tableRow.appendChild(progressCell(row.progress));
           if (section === "history") tableRow.appendChild(textCell(row.date_completed));
-          if (section === "queued") tableRow.appendChild(actionCell(row));
+          if (section !== "history") tableRow.appendChild(actionCell(row));
           return tableRow;
         }
 
@@ -236,7 +258,7 @@
             if (existingEmpty) return;
             const tableRow = document.createElement("tr");
             const cell = document.createElement("td");
-            cell.colSpan = section === "queued" ? 7 : 6;
+            cell.colSpan = section !== "history" ? 7 : 6;
             cell.className = "activity-empty";
             cell.textContent = `No ${(label || "queued").toLowerCase()} torrents.`;
             tableRow.appendChild(cell);
@@ -284,4 +306,3 @@
       })();
     </script>
 {% endblock %}
-

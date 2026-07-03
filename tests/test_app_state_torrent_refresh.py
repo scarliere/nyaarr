@@ -791,6 +791,26 @@ def test_root_folder_import_uses_live_metadata_without_env_gate(monkeypatch, tmp
     assert item["metadata_resolution_source"] == "provider"
 
 
+def test_root_folder_import_with_fallback_provider_marks_anilist_reconciliation_pending(monkeypatch, tmp_path) -> None:
+    media_file = tmp_path / "Fallback.Show.S01E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    kitsu = root_scan_metadata("Fallback Show")
+    kitsu.update({"source": "Kitsu", "provider_ids": {"kitsu": "fallback-kitsu"}, "poster": "https://kitsu.example/fallback.jpg"})
+
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_lookup", lambda context: None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: [kitsu])
+
+    item = app_state._imported_anime_item("Fallback Show", tmp_path, [media_file])
+
+    assert app_state._metadata_source_name(item) == "Kitsu"
+    assert item["metadata_resolution_source"] == "provider"
+    assert item["anilist_reconciliation_status"] == "pending"
+    assert item["anilist_reconciliation_reason"] == "Resolved from Kitsu; final AniList reconciliation is pending."
+    assert "anilist_metadata_checked_at" not in item
+
+
 def test_root_scan_merges_partial_folder_into_existing_anime_and_marks_missing(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
     folder = root / "Petals of Reincarnation"
@@ -828,6 +848,9 @@ def test_root_scan_merges_partial_folder_into_existing_anime_and_marks_missing(m
     assert anime["library_id"] == "AniList:179950"
     assert anime["manual_verification_required"] is False
     assert anime["completion"]["missing_episodes"] == 10
+    nfo = folder / "tvshow.nfo"
+    assert nfo.exists()
+    assert '<uniqueid type="anilist" default="true">179950</uniqueid>' in nfo.read_text(encoding="utf-8")
     assert app_state._missing_episode_numbers(anime) == [1, 2, 6, 7, 8, 9, 10, 11, 12, 13]
     assert anime["torrent_search"]["strategy"] == "Queued for background torrent search"
 
@@ -1677,7 +1700,9 @@ def test_metadata_verification_applies_selected_candidate_and_records_event(monk
     assert writes == [database]
 
 
-def test_manual_anilist_id_override_updates_metadata_and_episode_count(monkeypatch) -> None:
+def test_manual_anilist_id_override_updates_metadata_and_episode_count(monkeypatch, tmp_path) -> None:
+    local_folder = tmp_path / "Time of Eve"
+    local_folder.mkdir()
     database = {
         "settings": {"root_folder": "C:/Anime", "download_client": {"implementation": "qbittorrent", "enabled": False}},
         "ignored_torrents": [],
@@ -1689,6 +1714,7 @@ def test_manual_anilist_id_override_updates_metadata_and_episode_count(monkeypat
                 "original_title": "Time of Eve",
                 "episodes": "6",
                 "episode_files": ["C:/Anime/Time of Eve/Time.of.Eve.Movie.mkv"],
+                "local_path": str(local_folder),
                 "torrent_search": {"candidates": [{"title": "Old episode 2"}], "notices": []},
                 "torrent_manual_selection": {"required": True, "intervention_type": "low_confidence"},
                 "download_queue": {"status": "queued", "episode": 2, "hash": "old-episode-2"},
@@ -1718,6 +1744,9 @@ def test_manual_anilist_id_override_updates_metadata_and_episode_count(monkeypat
     assert anime["title"] == "Time of Eve Movie"
     assert anime["episodes"] == "1"
     assert anime["provider_ids"]["anilist"] == "7465"
+    nfo = (local_folder / "tvshow.nfo").read_text(encoding="utf-8")
+    assert '<uniqueid type="anilist" default="true">7465</uniqueid>' in nfo
+    assert "<id>anilist:7465</id>" in nfo
     assert anime["metadata_resolution_source"] == "manual-anilist-id"
     assert anime["completion"]["expected_episodes"] == 1
     assert anime["completion"]["missing_episodes"] == 0
@@ -2175,7 +2204,7 @@ def test_no_candidate_refresh_with_usable_candidates_clears_manual_and_dispatche
 
     monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
     monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
-    monkeypatch.setattr(app_state, "find_torrents_for_anime", lambda item: {"query": "Petals", "strategy": "Found", "candidates": [manual_candidate("candidate-1")], "notices": []})
+    monkeypatch.setattr(app_state, "find_torrents_for_anime", lambda item, preferred_subbers=None: {"query": "Petals", "strategy": "Found", "candidates": [manual_candidate("candidate-1")], "notices": []})
     monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", lambda db, item, forced_release=None: dispatched.append(item))
 
     summary = app_state.run_periodic_maintenance_tick(include_airing=False, include_external=True)
@@ -2192,7 +2221,7 @@ def test_no_candidate_search_stays_in_manual_intervention(monkeypatch) -> None:
     anime = database["anime"][0]
     anime["torrent_search"] = {"candidates": [], "notices": []}
 
-    monkeypatch.setattr(app_state, "find_torrents_for_anime", lambda item: {"query": "Petals", "strategy": "No candidates", "candidates": [], "notices": []})
+    monkeypatch.setattr(app_state, "find_torrents_for_anime", lambda item, preferred_subbers=None: {"query": "Petals", "strategy": "No candidates", "candidates": [], "notices": []})
 
     app_state._refresh_torrent_search(anime, database)
 
@@ -2210,7 +2239,7 @@ def test_refresh_treats_ignored_only_candidates_as_no_usable_candidates(monkeypa
     monkeypatch.setattr(
         app_state,
         "find_torrents_for_anime",
-        lambda item: {"query": "Petals", "strategy": "Only ignored", "candidates": [candidate], "notices": []},
+        lambda item, preferred_subbers=None: {"query": "Petals", "strategy": "Only ignored", "candidates": [candidate], "notices": []},
     )
 
     app_state._refresh_torrent_search(anime, database)
@@ -2528,7 +2557,7 @@ def test_anime_detail_model_maps_single_unnumbered_movie_file_to_episode_one(mon
     assert model["episodes"][0]["file"] == media.name
 
 
-def test_anilist_metadata_refresh_upgrades_fallback_provider(monkeypatch) -> None:
+def test_anilist_metadata_refresh_upgrades_fallback_provider(monkeypatch, tmp_path) -> None:
     now = datetime(2026, 6, 30, 0, 0, tzinfo=timezone.utc).timestamp()
     database = {"settings": {"root_folder": "C:/Anime"}, "events": [], "anime": []}
     anime = {
@@ -2543,6 +2572,8 @@ def test_anilist_metadata_refresh_upgrades_fallback_provider(monkeypatch) -> Non
         "episode_files": ["C:/Anime/Chainsaw Man/[Judas] Chainsaw Man The Movie.mkv"],
         "provider_ids": {"kitsu": "48323"},
         "source": "Root Folder Scan + Kitsu",
+        "local_path": str(tmp_path),
+        "anilist_reconciliation_status": "pending",
         "torrent_search": {"candidates": [], "notices": []},
     }
     database["anime"].append(anime)
@@ -2566,10 +2597,49 @@ def test_anilist_metadata_refresh_upgrades_fallback_provider(monkeypatch) -> Non
     assert changed is True
     assert app_state._metadata_source_name(anime) == "AniList"
     assert anime["provider_ids"]["anilist"] == "176907"
+    assert anime["anilist_reconciliation_status"] == "reconciled"
+    nfo = (tmp_path / "tvshow.nfo").read_text(encoding="utf-8")
+    assert '<uniqueid type="anilist" default="true">176907</uniqueid>' in nfo
+    assert "<id>anilist:176907</id>" in nfo
     assert anime["metadata_resolution_source"] == "anilist-routine"
     assert "anilist_metadata_error" not in anime
     assert database["events"][-1]["category"] == "metadata"
     assert "AniList" in database["events"][-1]["message"]
+
+
+def test_anilist_metadata_refresh_preserves_fallback_poster_when_anilist_has_none(monkeypatch) -> None:
+    now = datetime(2026, 6, 30, 0, 0, tzinfo=timezone.utc).timestamp()
+    database = {"settings": {"root_folder": "C:/Anime"}, "events": [], "anime": []}
+    anime = {
+        "library_id": "root-folder:fallback-show",
+        "title": "Fallback Show",
+        "original_title": "Fallback Show",
+        "year": "2026",
+        "season_number": 1,
+        "episodes": "12",
+        "status": "Releasing",
+        "poster": "https://kitsu.example/fallback.jpg",
+        "poster_source": "Kitsu",
+        "provider_ids": {"kitsu": "fallback-kitsu"},
+        "source": "Root Folder Scan + Kitsu",
+        "anilist_reconciliation_status": "pending",
+        "torrent_search": {"candidates": [], "notices": []},
+    }
+    database["anime"].append(anime)
+    anilist = root_scan_metadata("Fallback Show")
+    anilist.update({"source": "AniList", "provider_ids": {"anilist": "12345"}, "poster": ""})
+
+    monkeypatch.setattr(app_state, "search_anilist", lambda title: [anilist])
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+
+    changed = app_state._refresh_anilist_metadata(database, anime, now)
+
+    assert changed is True
+    assert app_state._metadata_source_name(anime) == "AniList"
+    assert anime["provider_ids"]["anilist"] == "12345"
+    assert anime["poster"] == "https://kitsu.example/fallback.jpg"
+    assert anime["poster_source"] == "Kitsu"
+    assert anime["anilist_reconciliation_status"] == "reconciled"
 
 
 def test_anilist_metadata_refresh_corrects_fallback_episode_count(monkeypatch) -> None:
@@ -2590,6 +2660,7 @@ def test_anilist_metadata_refresh_corrects_fallback_episode_count(monkeypatch) -
         ],
         "provider_ids": {"kitsu": "46214"},
         "source": "Root Folder Scan + Kitsu",
+        "anilist_reconciliation_status": "pending",
         "torrent_search": {"candidates": [], "notices": []},
     }
     database["anime"].append(anime)
@@ -2631,6 +2702,21 @@ def test_anilist_metadata_refresh_rechecks_stale_anilist_backed_items() -> None:
 
     assert app_state._should_refresh_anilist_metadata(anime, now) is False
 
+
+def test_pending_anilist_reconciliation_retries_without_checked_timestamp() -> None:
+    now = datetime(2026, 6, 30, 0, 0, tzinfo=timezone.utc).timestamp()
+    anime = {
+        "title": "Fallback Show",
+        "source": "Root Folder Scan + Kitsu",
+        "provider_ids": {"kitsu": "fallback-kitsu"},
+        "anilist_reconciliation_status": "pending",
+    }
+
+    assert app_state._should_refresh_anilist_metadata(anime, now) is True
+
+    anime["anilist_metadata_checked_at"] = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    assert app_state._should_refresh_anilist_metadata(anime, now) is False
 
 
 def test_poster_repair_preserves_anilist_provider_id_from_replacement(monkeypatch) -> None:
@@ -2874,3 +2960,107 @@ def test_search_metadata_keeps_checking_fallbacks_when_anilist_has_no_poster(mon
     assert results[0]["poster_source"] == "Kitsu"
     assert results[1]["poster"] == "https://kitsu.example/sanda.jpg"
     assert any("without posters" in notice for notice in notices)
+
+
+def test_user_settings_default_preferred_subbers_include_subsplease(monkeypatch) -> None:
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: {"settings": {}, "anime": [], "events": []})
+
+    settings = app_state.user_settings()
+
+    assert settings["preferred_subbers"] == ["SubsPlease"]
+    assert settings["preferred_subbers_text"] == "SubsPlease"
+
+
+def test_save_torrent_preferences_keeps_subsplease_first(monkeypatch) -> None:
+    database = {"settings": {}, "anime": [], "events": []}
+    writes = []
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    success, message = app_state.save_torrent_preferences({"preferred_subbers": "Erai-raws\nSubsPlease", "torrent_confidence_threshold": "80"})
+
+    assert success is True
+    assert message == "Torrent preferences saved."
+    assert database["settings"]["preferred_subbers"] == ["SubsPlease", "Erai-raws"]
+    assert database["settings"]["torrent_confidence_threshold"] == 80
+    assert writes == [database]
+
+
+def test_refresh_torrent_search_passes_defaulted_preferred_subbers(monkeypatch) -> None:
+    calls = []
+    anime = {"title": "Petals of Reincarnation"}
+    database = {"settings": {"preferred_subbers": ["Erai-raws"]}, "ignored_torrents": [], "events": [], "anime": []}
+
+    def fake_find(item, preferred_subbers=None):
+        calls.append(preferred_subbers)
+        return {"query": item["title"], "strategy": "test", "candidates": [], "notices": []}
+
+    monkeypatch.setattr(app_state, "find_torrents_for_anime", fake_find)
+
+    app_state._refresh_torrent_search(anime, database)
+
+    assert calls == [["SubsPlease", "Erai-raws"]]
+
+
+def test_unblock_ignored_torrent_removes_blocked_key(monkeypatch) -> None:
+    database = {
+        "settings": {},
+        "events": [],
+        "ignored_torrents": [{"key": "hash:bad"}, {"key": "hash:keep"}],
+    }
+    writes = []
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    success, message = app_state.unblock_ignored_torrent("hash:bad")
+
+    assert success is True
+    assert message == "Torrent candidate unblocked. It can be considered by future searches."
+    assert database["ignored_torrents"] == [{"key": "hash:keep"}]
+    assert writes == [database]
+
+
+def test_update_anime_preferences_marks_unmonitored_and_refresh_pending(monkeypatch) -> None:
+    database = {
+        "settings": {"root_folder": "C:/Anime"},
+        "events": [],
+        "anime": [
+            {
+                "library_id": "anime-1",
+                "title": "Petals of Reincarnation",
+                "quality_resolution": "720p",
+                "season_number": 1,
+                "episodes": "12",
+                "completion": {"expected_episodes": 12, "local_episodes": 0, "progress_target": 12, "missing_episodes": 12},
+                "torrent_search": {"checked_at": "2026-01-01T00:00:00+00:00", "candidates": [{"title": "old"}]},
+            }
+        ],
+    }
+    writes = []
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    success, message = app_state.update_anime_preferences("anime-1", {"quality_resolution": "1080p", "season_number": "2"})
+
+    anime = database["anime"][0]
+    assert success is True
+    assert message.startswith("Anime preferences saved.")
+    assert anime["quality_resolution"] == "1080p"
+    assert anime["season_number"] == 2
+    assert anime["monitored"] is False
+    assert "checked_at" not in anime["torrent_search"]
+    assert writes == [database]
+
+
+def test_delete_anime_removes_library_item_without_touching_files(monkeypatch) -> None:
+    database = {"settings": {}, "events": [], "anime": [{"library_id": "anime-1", "title": "Petals"}, {"library_id": "anime-2", "title": "Other"}]}
+    writes = []
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    success, message = app_state.delete_anime("anime-1")
+
+    assert success is True
+    assert message == "Anime removed from the library. Local files were not deleted."
+    assert [item["library_id"] for item in database["anime"]] == ["anime-2"]
+    assert writes == [database]
