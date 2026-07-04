@@ -110,6 +110,8 @@ Local progress only counts files in the selected season folder when a season fol
 ## Root-Folder Match Confidence
 
 Root-folder metadata matching scores the imported folder title against the provider title, original/Romaji title, explicit aliases, metadata search titles, and provider title objects such as AniList `romaji`, `english`, and `native`. Exact alias or Romaji matches can satisfy confidence even when the English display title differs, while year, season, part/cour, and episode-count compatibility still constrain ambiguous matches.
+
+AniList display-title mapping keeps English, Romaji, native, and synonym titles available for matching. When AniList's English title uses `Cour N` but its Romaji title or synonym uses the matching `Part N`, Nyaarr chooses the `Part N` form as the primary title and leaves the `Cour N` form as an alias/provider title. This avoids seeding torrent searches with uncommon cour wording for split-cour anime such as Dr. Stone: Science Future Part 3.
 ## Poster Repair
 
 The periodic maintenance worker repairs missing or blocked posters outside page render paths. Dashboard and calendar pages never call metadata providers directly for poster repair.

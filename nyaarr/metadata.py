@@ -340,12 +340,14 @@ def _open_json(request: urllib.request.Request, error_prefix: str) -> dict[str, 
 
 def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
     title = item.get("title") or {}
+    synonyms = item.get("synonyms", [])
     title_values = [
         title.get("english"),
         title.get("romaji"),
         title.get("native"),
-        *item.get("synonyms", []),
+        *synonyms,
     ]
+    display_title = _anilist_display_title(title, synonyms)
     studios = item.get("studios", {}).get("nodes", [])
     studio = studios[0]["name"] if studios else "Unknown"
     year = item.get("seasonYear")
@@ -356,7 +358,7 @@ def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
     airing = _anilist_airing_fields(item.get("nextAiringEpisode"))
 
     return {
-        "title": title.get("english") or title.get("romaji") or title.get("native") or "Unknown title",
+        "title": display_title,
         "original_title": title.get("romaji") or title.get("native") or "Unknown",
         "year": str(year) if year else "Unknown",
         "status": _format_anilist_status(item.get("status")),
@@ -365,6 +367,11 @@ def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
         "runtime": f"{duration} min" if duration else "Unknown",
         "genres": item.get("genres") or [],
         "aliases": _unique_values(title_values),
+        "provider_title": {
+            "english": title.get("english") or "",
+            "romaji": title.get("romaji") or "",
+            "native": title.get("native") or "",
+        },
         "studio": studio,
         "source": "AniList",
         "rating": f"{score}%" if score else "Unrated",
@@ -376,6 +383,34 @@ def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
             "mal": item.get("idMal"),
         },
     }
+
+def _anilist_display_title(title: dict[str, Any], synonyms: list[Any]) -> str:
+    english = str(title.get("english") or "").strip()
+    romaji = str(title.get("romaji") or "").strip()
+    native = str(title.get("native") or "").strip()
+    if english:
+        english_cour = _cour_marker_number(english)
+        if english_cour is not None and _part_marker_number(english) is None:
+            for value in (romaji, *synonyms, native):
+                candidate = str(value or "").strip()
+                if candidate and _part_marker_number(candidate) == english_cour:
+                    return candidate
+        return english
+    return romaji or native or "Unknown title"
+
+
+def _part_marker_number(value: str) -> int | None:
+    match = re.search(r"\bpart\s*(\d{1,2})\b", value.casefold())
+    return int(match.group(1)) if match else None
+
+
+def _cour_marker_number(value: str) -> int | None:
+    normalized = value.casefold()
+    match = re.search(r"\bcour\s*(\d{1,2})\b", normalized)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*cour\b", normalized)
+    return int(match.group(1)) if match else None
 
 
 def _map_offline_database_item(item: dict[str, Any]) -> dict[str, Any]:
