@@ -93,20 +93,20 @@
             <tbody>
               {% for candidate in item.candidates %}
                 <tr>
-                  <td><strong>{{ candidate.title }}</strong><span>{{ candidate.confidence_reasons|join(', ') }}</span></td>
-                  <td>{{ candidate.release_group }}</td>
-                  <td>{{ candidate.release_kind }}</td>
-                  <td>{{ candidate.episode or '-' }}</td>
-                  <td>{{ candidate.size }}</td>
-                  <td>{{ candidate.seeders }}</td>
-                  <td>
+                  <td data-label="Candidate"><strong>{{ candidate.title }}</strong><span>{{ candidate.confidence_reasons|join(', ') }}</span></td>
+                  <td data-label="Subber">{{ candidate.release_group }}</td>
+                  <td data-label="Type">{{ candidate.release_kind }}</td>
+                  <td data-label="Episode">{{ candidate.episode or '-' }}</td>
+                  <td data-label="Size">{{ candidate.size }}</td>
+                  <td data-label="Seeders">{{ candidate.seeders }}</td>
+                  <td data-label="Confidence">
                     <div class="activity-progress-cell">
                       <div class="activity-progress" aria-label="{{ candidate.confidence }} percent confidence"><span style="width: {{ candidate.confidence }}%"></span></div>
                       <em>{{ candidate.confidence }}%</em>
                     </div>
                   </td>
-                  <td>{% if candidate.detail_url %}<a href="{{ candidate.detail_url }}" target="_blank" rel="noreferrer">Open</a>{% else %}-{% endif %}</td>
-                  <td>
+                  <td data-label="Link">{% if candidate.detail_url %}<a href="{{ candidate.detail_url }}" target="_blank" rel="noreferrer">Open</a>{% else %}-{% endif %}</td>
+                  <td data-label="Action">
                     <div class="manual-selection-actions">
                       <form class="manual-selection-action" action="{{ url_for('select_manual_torrent') }}" method="post">
                         <input type="hidden" name="library_id" value="{{ item.library_id }}">
@@ -124,14 +124,14 @@
               {% else %}
                 {% for episode in item.needed_episodes %}
                   <tr>
-                    <td><strong>{{ episode.label }}</strong><span>Manual torrent assignment required.</span></td>
-                    <td>-</td>
-                    <td>episode</td>
-                    <td>{{ episode.episode }}</td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td>{{ episode.resolution }}</td>
-                    <td colspan="2">
+                    <td data-label="Candidate"><strong>{{ episode.label }}</strong><span>Manual torrent assignment required.</span></td>
+                    <td data-label="Subber">-</td>
+                    <td data-label="Type">episode</td>
+                    <td data-label="Episode">{{ episode.episode }}</td>
+                    <td data-label="Size">-</td>
+                    <td data-label="Seeders">-</td>
+                    <td data-label="Resolution">{{ episode.resolution }}</td>
+                    <td data-label="Torrent Link" colspan="2">
                       <form class="manual-selection-action manual-link-form manual-episode-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
                         <input type="hidden" name="library_id" value="{{ item.library_id }}">
                         <input type="hidden" name="episode" value="{{ episode.episode }}">

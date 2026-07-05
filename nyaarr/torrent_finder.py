@@ -17,8 +17,10 @@ from typing import Any
 NYAA_RSS_URL = "https://nyaa.si/"
 NYAA_NAMESPACE = "{https://nyaa.si/xmlns/nyaa}"
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("NYAARR_NYAA_HTTP_TIMEOUT_SECONDS", "8"))
-NYAA_RSS_SEARCH_WORKERS = max(1, int(os.environ.get("NYAARR_NYAA_RSS_SEARCH_WORKERS", "8")))
+NYAA_RSS_SEARCH_WORKERS = min(16, max(1, int(os.environ.get("NYAARR_NYAA_RSS_SEARCH_WORKERS", "8"))))
 NYAA_RSS_CACHE_TTL_SECONDS = int(os.environ.get("NYAARR_NYAA_RSS_CACHE_TTL_SECONDS", "300"))
+NYAA_RSS_CACHE_MAX_ENTRIES = max(0, int(os.environ.get("NYAARR_NYAA_RSS_CACHE_MAX_ENTRIES", "256")))
+NYAA_MAX_EPISODE_SEARCH_QUERIES = max(0, int(os.environ.get("NYAARR_NYAA_MAX_EPISODE_SEARCH_QUERIES", "72")))
 LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD = int(os.environ.get("NYAARR_LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD", "6"))
 _RSS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _RSS_CACHE_LOCK = threading.Lock()
@@ -226,17 +228,37 @@ def _unique_queries(queries: list[str]) -> list[str]:
 def search_nyaa_rss(query: str) -> list[dict[str, Any]]:
     cache_key = query.strip().casefold()
     now = time.time()
-    if NYAA_RSS_CACHE_TTL_SECONDS > 0:
+    if NYAA_RSS_CACHE_TTL_SECONDS > 0 and NYAA_RSS_CACHE_MAX_ENTRIES != 0:
         with _RSS_CACHE_LOCK:
             cached = _RSS_CACHE.get(cache_key)
             if cached is not None and now - cached[0] < NYAA_RSS_CACHE_TTL_SECONDS:
                 return [dict(release) for release in cached[1]]
+            if cached is not None:
+                _RSS_CACHE.pop(cache_key, None)
 
     releases = _fetch_nyaa_rss(query)
-    if NYAA_RSS_CACHE_TTL_SECONDS > 0:
+    if NYAA_RSS_CACHE_TTL_SECONDS > 0 and NYAA_RSS_CACHE_MAX_ENTRIES != 0:
         with _RSS_CACHE_LOCK:
+            _prune_rss_cache_locked(now)
             _RSS_CACHE[cache_key] = (now, [dict(release) for release in releases])
+            _prune_rss_cache_locked(now)
     return [dict(release) for release in releases]
+
+
+def _prune_rss_cache_locked(now: float | None = None) -> None:
+    if NYAA_RSS_CACHE_MAX_ENTRIES == 0:
+        _RSS_CACHE.clear()
+        return
+    current = time.time() if now is None else now
+    if NYAA_RSS_CACHE_TTL_SECONDS > 0:
+        expired_keys = [key for key, (stored_at, _releases) in _RSS_CACHE.items() if current - stored_at >= NYAA_RSS_CACHE_TTL_SECONDS]
+        for key in expired_keys:
+            _RSS_CACHE.pop(key, None)
+    if NYAA_RSS_CACHE_MAX_ENTRIES <= 0:
+        return
+    while len(_RSS_CACHE) > NYAA_RSS_CACHE_MAX_ENTRIES:
+        oldest_key = min(_RSS_CACHE, key=lambda key: _RSS_CACHE[key][0])
+        _RSS_CACHE.pop(oldest_key, None)
 
 
 def _fetch_nyaa_rss(query: str) -> list[dict[str, Any]]:
@@ -350,7 +372,12 @@ def _load_episode_search_releases(
             queries.insert(0, f"{search_title} {group} {episode:02d}")
             queries.insert(0, f"{group} {search_title} {episode:02d}")
         for query in _unique_queries(queries):
+            if NYAA_MAX_EPISODE_SEARCH_QUERIES and len(episode_by_query) >= NYAA_MAX_EPISODE_SEARCH_QUERIES:
+                notices.append(f"Episode RSS fan-out was capped at {NYAA_MAX_EPISODE_SEARCH_QUERIES} query/queries for this refresh.")
+                break
             episode_by_query[query] = episode
+        if NYAA_MAX_EPISODE_SEARCH_QUERIES and len(episode_by_query) >= NYAA_MAX_EPISODE_SEARCH_QUERIES:
+            break
     for query, episode_releases, error in _search_nyaa_rss_queries(list(episode_by_query)):
         episode = episode_by_query[query]
         if error:

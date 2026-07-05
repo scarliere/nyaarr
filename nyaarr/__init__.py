@@ -16,6 +16,7 @@ from .app_state import (
     anime_detail_model,
     anime_library,
     calendar_model,
+    dashboard_model,
     delete_anime,
     delete_download_client,
     delete_root_folder,
@@ -140,6 +141,7 @@ def create_app() -> Flask:
             active_page="anime_list",
             anime_cards=anime_library(),
             stats=library_stats(),
+            dashboard=dashboard_model(),
         )
 
     @app.get("/anime/list")
@@ -154,6 +156,7 @@ def create_app() -> Flask:
             active_page="anime_list",
             anime_cards=anime_library(),
             stats=library_stats(),
+            dashboard=dashboard_model(),
         )
 
     @app.get("/anime/<path:library_id>")

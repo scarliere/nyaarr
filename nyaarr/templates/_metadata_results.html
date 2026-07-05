@@ -45,7 +45,7 @@
                       <h3>{{ anime.title }}</h3>
                       <p>{{ anime.original_title }} &middot; {{ anime.year }}</p>
                     </div>
-                  <span class="rating"><span aria-hidden="true" class="rating-heart">&hearts;</span>{{ anime.rating }}</span>
+                  <span class="rating">{{ anime.rating }}</span>
                   </div>
                   <p class="synopsis">{{ anime.synopsis }}</p>
                   <dl class="metadata-grid">
@@ -102,18 +102,21 @@
                     <input type="hidden" name="airing_episode" value="{{ anime.airing_episode }}">
                     <input type="hidden" name="airing_source" value="{{ anime.airing_source }}">
                     <label class="quality-select">
-                      <span>Up to:</span>
+                      <span>Preferred quality</span>
                       <select name="quality_resolution">
                         <option value="1080p" selected>1080p</option>
                         <option value="720p">720p</option>
                         <option value="BD">BD</option>
                       </select>
                     </label>
-                    <label class="quality-select nyaa-link-input">
-                      <span>Nyaa link:</span>
-                      <input name="nyaa_link" type="url" placeholder="Optional Nyaa, magnet, or .torrent URL">
-                    </label>
-                    <button type="submit">Add</button>
+                    <details class="advanced-add-options">
+                      <summary>Advanced</summary>
+                      <label class="quality-select nyaa-link-input">
+                        <span>Manual torrent link</span>
+                        <input name="nyaa_link" type="url" placeholder="Optional Nyaa, magnet, or .torrent URL">
+                      </label>
+                    </details>
+                    <button type="submit">Add and monitor</button>
                   </form>
                 </div>
                 </div>

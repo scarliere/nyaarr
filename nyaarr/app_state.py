@@ -109,6 +109,12 @@ POSTER_CHECK_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_POSTER_CHECK_MAX_AGE_S
 ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS", str(24 * 60 * 60)))
 EXTERNAL_REQUEST_SPACING_SECONDS = float(os.environ.get("NYAARR_EXTERNAL_REQUEST_SPACING_SECONDS", "2.0"))
 ROOT_IMPORT_METADATA_ON_SAVE = os.environ.get("NYAARR_ROOT_IMPORT_METADATA_ON_SAVE") == "1"
+MAX_IGNORED_TORRENTS = int(os.environ.get("NYAARR_MAX_IGNORED_TORRENTS", "500"))
+MAX_QUEUE_HISTORY_PER_ANIME = int(os.environ.get("NYAARR_MAX_QUEUE_HISTORY_PER_ANIME", "75"))
+MAX_METADATA_CANDIDATES_PER_ANIME = int(os.environ.get("NYAARR_MAX_METADATA_CANDIDATES_PER_ANIME", "10"))
+MAX_FLAGGED_FILES_PER_QUEUE = int(os.environ.get("NYAARR_MAX_FLAGGED_FILES_PER_QUEUE", "25"))
+MAX_SELECTED_FILES_PER_QUEUE = int(os.environ.get("NYAARR_MAX_SELECTED_FILES_PER_QUEUE", "100"))
+MAX_RESOLVED_METADATA_CACHE_ENTRIES = int(os.environ.get("NYAARR_MAX_RESOLVED_METADATA_CACHE_ENTRIES", "2000"))
 _STATE_MAINTENANCE_LOCK = threading.Lock()
 _USER_DATABASE_LOCK = threading.RLock()
 _ROOT_SCAN_PROGRESS_LOCK = threading.Lock()
@@ -208,6 +214,152 @@ RELEASE_SPEC_PATTERNS = (
 
 def anime_library() -> list[dict[str, Any]]:
     return _read_user_database()["anime"]
+
+
+def dashboard_model() -> dict[str, Any]:
+    database = _read_user_database()
+    library = database["anime"]
+    manual_items, manual_changed = _manual_selection_items(database)
+    if manual_changed:
+        _write_user_database(database)
+    queued_rows = _activity_queued_rows(database)
+    history_rows = _activity_history_rows(database)
+    blocked_rows = _activity_blocked_rows(database)
+    missing_settings = missing_settings_summary()
+    setup_steps = _dashboard_setup_steps(database, len(library), missing_settings)
+    attention_items = _dashboard_attention_items(
+        missing_settings,
+        manual_count=len(manual_items),
+        metadata_count=_metadata_verification_count(library),
+        queued_count=len(queued_rows),
+        blocked_count=len(blocked_rows),
+    )
+    return {
+        "setup_steps": setup_steps,
+        "setup_complete": all(step["complete"] for step in setup_steps),
+        "attention_items": attention_items,
+        "active_downloads": queued_rows[:5],
+        "recent_history": history_rows[:5],
+        "recent_anime": _recent_dashboard_anime(library),
+        "counts": {
+            "attention": len(attention_items),
+            "active": len(queued_rows),
+            "manual": len(manual_items),
+            "metadata": _metadata_verification_count(library),
+            "blocked": len(blocked_rows),
+        },
+    }
+
+
+def _dashboard_setup_steps(database: dict[str, Any], anime_count: int, missing_settings: dict[str, Any]) -> list[dict[str, Any]]:
+    settings = database.get("settings") if isinstance(database.get("settings"), dict) else {}
+    download_client = settings.get("download_client") if isinstance(settings, dict) else {}
+    preferred_subbers = _preferred_subber_list(database)
+    missing = set(missing_settings.get("missing") if isinstance(missing_settings.get("missing"), list) else [])
+    return [
+        {
+            "label": "Choose anime root folder",
+            "description": "Nyaarr needs a library folder before it can place downloads or scan local files.",
+            "complete": "root_folder" not in missing,
+            "action_label": "Open settings",
+            "action_url": "/settings",
+        },
+        {
+            "label": "Connect qBittorrent",
+            "description": "A download client is required before selected releases can be queued.",
+            "complete": "download_client" not in missing and isinstance(download_client, dict) and download_client.get("enabled"),
+            "action_label": "Connect client",
+            "action_url": "/settings",
+        },
+        {
+            "label": "Confirm preferred subbers",
+            "description": "Preferred release groups guide automatic RSS searches and dispatch decisions.",
+            "complete": bool(preferred_subbers),
+            "action_label": "Review preferences",
+            "action_url": "/settings",
+        },
+        {
+            "label": "Add or import anime",
+            "description": "Add a title from metadata search or scan your root folder to start monitoring.",
+            "complete": anime_count > 0,
+            "action_label": "Add anime",
+            "action_url": "/add",
+        },
+    ]
+
+
+def _dashboard_attention_items(
+    missing_settings: dict[str, Any],
+    *,
+    manual_count: int,
+    metadata_count: int,
+    queued_count: int,
+    blocked_count: int,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    missing_count = int(missing_settings.get("count") or 0)
+    if missing_count:
+        items.append({
+            "tone": "yellow",
+            "label": "Setup incomplete",
+            "value": str(missing_count),
+            "description": "Required settings are missing.",
+            "action_label": "Fix settings",
+            "action_url": "/settings",
+        })
+    if manual_count:
+        items.append({
+            "tone": "yellow",
+            "label": "Torrent decisions",
+            "value": str(manual_count),
+            "description": "Low-confidence releases need a manual choice.",
+            "action_label": "Review",
+            "action_url": "/anime/manual-selection",
+        })
+    if metadata_count:
+        items.append({
+            "tone": "yellow",
+            "label": "Metadata review",
+            "value": str(metadata_count),
+            "description": "Root-folder imports need the right anime match.",
+            "action_label": "Match metadata",
+            "action_url": "/anime/metadata-verification",
+        })
+    if blocked_count:
+        items.append({
+            "tone": "red",
+            "label": "Blocked torrents",
+            "value": str(blocked_count),
+            "description": "Rejected candidates are being kept out of automation.",
+            "action_label": "View blocked",
+            "action_url": "/activity/blocked",
+        })
+    if queued_count:
+        items.append({
+            "tone": "blue",
+            "label": "Active downloads",
+            "value": str(queued_count),
+            "description": "Downloads are queued, checking, or in progress.",
+            "action_label": "Open activity",
+            "action_url": "/activity",
+        })
+    return items
+
+
+def _recent_dashboard_anime(library: list[dict[str, Any]], limit: int = 6) -> list[dict[str, str]]:
+    rows = []
+    for anime in reversed(library[-limit:]):
+        if not isinstance(anime, dict):
+            continue
+        rows.append(
+            {
+                "library_id": str(anime.get("library_id") or ""),
+                "title": str(anime.get("title") or anime.get("original_title") or "Unknown"),
+                "state": str(anime.get("library_state") or "Unknown"),
+                "poster": str(anime.get("poster") or anime.get("poster_url") or ""),
+            }
+        )
+    return rows
 
 
 def run_startup_download_status_check() -> dict[str, Any]:
@@ -1029,16 +1181,16 @@ def _start_root_folder_scan_thread(root_folder: Path) -> None:
 def _run_root_folder_scan_job(root_folder: Path) -> None:
     try:
         _update_root_scan_progress(phase="Reading folders", current=0, total=0, message=f"Reading top-level items from {root_folder}")
-        candidates = _root_folder_candidates(root_folder)
-        _update_root_scan_progress(phase="Saving imports", current=0, total=len(candidates), message=f"Saving {len(candidates)} anime candidate(s) to the library.")
+        children = _root_folder_children(root_folder)
         database = _read_user_database()
         database["settings"]["root_folder"] = str(root_folder)
         _seed_resolved_metadata_cache_from_library(database["anime"])
-        scan_summary = _import_root_folder_candidates(database, root_folder, candidates)
+        scan_summary = _import_root_folder_children(database, root_folder, children)
         message = f"Root folder scan complete: {root_folder}"
         _record_event(database, "settings", f"{message} Imported={scan_summary['imported']}, updated={scan_summary['updated']}, skipped={scan_summary['skipped']}.")
         _write_user_database(database)
-        _update_root_scan_progress(phase="Complete", current=len(candidates), total=len(candidates), message=message, summary=scan_summary, active=False)
+        imported_total = scan_summary["imported"] + scan_summary["updated"] + scan_summary["skipped"]
+        _update_root_scan_progress(phase="Complete", current=imported_total, total=imported_total, message=message, summary=scan_summary, active=False)
     except Exception as exc:
         message = f"Root folder scan failed: {exc}"
         _record_standalone_event("settings", message)
@@ -3931,10 +4083,11 @@ def _record_ignored_torrent(database: dict[str, Any], anime: dict[str, Any], tor
             "torrent_url": str(torrent.get("torrent_url") or ""),
             "anime_library_id": str(anime.get("library_id") or ""),
             "anime_title": str(anime.get("title") or anime.get("original_title") or ""),
-            "flagged_files": torrent.get("flagged_files") if isinstance(torrent.get("flagged_files"), list) else [],
+            "flagged_files": _limited_list(torrent.get("flagged_files"), MAX_FLAGGED_FILES_PER_QUEUE),
             "ignored_at": datetime.now(timezone.utc).isoformat(),
         }
     )
+    _prune_ignored_torrents(database)
 
 
 def _ignored_torrent_keys(database: dict[str, Any]) -> set[str]:
@@ -3977,32 +4130,7 @@ def _import_root_folder_candidates(database: dict[str, Any], root_folder: Path, 
     total = len(candidates)
     _update_root_scan_progress(phase="Importing", current=0, total=total, message=f"Found {total} anime candidate(s) in {root_folder}.")
     for index, candidate in enumerate(candidates, start=1):
-        existing = next((item for item in database["anime"] if item["library_id"] == candidate["library_id"]), None)
-        merge_target = _find_existing_root_import_target(database["anime"], candidate)
-        if merge_target is not None:
-            if existing is not None and existing is not merge_target:
-                database["anime"].remove(existing)
-            existing = merge_target
-        duplicate_title = None
-        if existing is None:
-            duplicate_title = _find_duplicate_title_conflict(database["anime"], candidate, exclude_library_id=str(candidate.get("library_id") or ""))
-        if duplicate_title is not None:
-            _resolve_duplicate_title_conflict(candidate, duplicate_title)
-        if existing is None:
-            database["anime"].append(candidate)
-            stored_item = candidate
-            summary["imported"] += 1
-        else:
-            _update_imported_anime(existing, candidate)
-            stored_item = existing
-            summary["updated"] += 1
-
-        if stored_item.get("manual_verification_required"):
-            summary["manual_verification"] += 1
-        else:
-            summary["verified"] += 1
-            _sync_anime_nfo_file(stored_item)
-        _mark_torrent_search_pending(stored_item)
+        stored_item = _store_root_folder_candidate(database, candidate, summary)
         _update_root_scan_progress(
             phase="Importing",
             current=index,
@@ -4014,26 +4142,90 @@ def _import_root_folder_candidates(database: dict[str, Any], root_folder: Path, 
     return summary
 
 
+def _import_root_folder_children(database: dict[str, Any], root_folder: Path, children: list[Path]) -> dict[str, int]:
+    summary = _empty_scan_summary()
+    total = len(children)
+    imported_count = 0
+    _update_root_scan_progress(phase="Checking media", current=0, total=total, message=f"Checking {total} top-level item(s) for anime media.")
+    for index, child in enumerate(children, start=1):
+        _update_root_scan_progress(phase="Checking media", current=index, total=total, summary=summary, message=f"Checking {index} of {total}: {child.name}")
+        candidate = _root_folder_candidate_from_child(child)
+        if candidate is None:
+            summary["skipped"] += 1
+            continue
+        imported_count += 1
+        _update_root_scan_progress(phase="Resolving metadata", current=index, total=total, summary=summary, message=f"Resolving metadata for {child.name}")
+        stored_item = _store_root_folder_candidate(database, candidate, summary)
+        _update_root_scan_progress(
+            phase="Importing",
+            current=index,
+            total=total,
+            summary=summary,
+            message=f"Imported {imported_count}: {stored_item.get('title') or stored_item.get('original_title') or 'Unknown'}",
+        )
+    return summary
+
+
+def _store_root_folder_candidate(database: dict[str, Any], candidate: dict[str, Any], summary: dict[str, int]) -> dict[str, Any]:
+    existing = next((item for item in database["anime"] if item["library_id"] == candidate["library_id"]), None)
+    merge_target = _find_existing_root_import_target(database["anime"], candidate)
+    if merge_target is not None:
+        if existing is not None and existing is not merge_target:
+            database["anime"].remove(existing)
+        existing = merge_target
+    duplicate_title = None
+    if existing is None:
+        duplicate_title = _find_duplicate_title_conflict(database["anime"], candidate, exclude_library_id=str(candidate.get("library_id") or ""))
+    if duplicate_title is not None:
+        _resolve_duplicate_title_conflict(candidate, duplicate_title)
+    if existing is None:
+        database["anime"].append(candidate)
+        stored_item = candidate
+        summary["imported"] += 1
+    else:
+        _update_imported_anime(existing, candidate)
+        stored_item = existing
+        summary["updated"] += 1
+
+    if stored_item.get("manual_verification_required"):
+        summary["manual_verification"] += 1
+    else:
+        summary["verified"] += 1
+        _sync_anime_nfo_file(stored_item)
+    _mark_torrent_search_pending(stored_item)
+    return stored_item
+
+
 def _root_folder_candidates(root_folder: Path) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    children = sorted(root_folder.iterdir(), key=lambda path: path.name.casefold())
+    children = _root_folder_children(root_folder)
     total = len(children)
     _update_root_scan_progress(phase="Checking media", current=0, total=total, message=f"Checking {total} top-level item(s) for anime media.")
     for index, child in enumerate(children, start=1):
         _update_root_scan_progress(phase="Checking media", current=index, total=total, message=f"Checking {index} of {total}: {child.name}")
-        if child.is_dir():
-            media_files = _media_files(child)
-            if not media_files:
-                continue
-            _update_root_scan_progress(phase="Resolving metadata", current=index, total=total, message=f"Resolving metadata for {child.name}")
-            candidates.append(_imported_anime_item(child.name, child, media_files))
-        elif child.is_file() and child.suffix.casefold() in MEDIA_EXTENSIONS:
-            title = _title_from_media_file(child)
-            _update_root_scan_progress(phase="Resolving metadata", current=index, total=total, message=f"Resolving metadata for {child.name}")
-            candidates.append(_imported_anime_item(title, child, [child]))
+        candidate = _root_folder_candidate_from_child(child)
+        if candidate is None:
+            continue
+        _update_root_scan_progress(phase="Resolving metadata", current=index, total=total, message=f"Resolving metadata for {child.name}")
+        candidates.append(candidate)
 
     _update_root_scan_progress(phase="Importing", current=0, total=len(candidates), message=f"Found {len(candidates)} anime candidate(s).")
     return candidates
+
+
+def _root_folder_children(root_folder: Path) -> list[Path]:
+    return sorted(root_folder.iterdir(), key=lambda path: path.name.casefold())
+
+
+def _root_folder_candidate_from_child(child: Path) -> dict[str, Any] | None:
+    if child.is_dir():
+        media_files = _media_files(child)
+        if not media_files:
+            return None
+        return _imported_anime_item(child.name, child, media_files)
+    if child.is_file() and child.suffix.casefold() in MEDIA_EXTENSIONS:
+        return _imported_anime_item(_title_from_media_file(child), child, [child])
+    return None
 
 
 def _imported_anime_item(title: str, source_path: Path, media_files: list[Path]) -> dict[str, Any]:
@@ -5189,12 +5381,14 @@ def _resolved_metadata_cache_store(match_context: dict[str, Any], metadata: dict
     cache.setdefault("schema_version", 1)
     resolved = cache.setdefault("resolved", {})
     metadata_entry = _cacheable_metadata(metadata)
+    stored_at = datetime.now(timezone.utc).isoformat()
     for search_title in search_titles:
         resolved[_metadata_cache_key(search_title)] = {
             "metadata_season_hint": match_context.get("season_number"),
             "metadata_year_hint": match_context.get("year"),
             "metadata": metadata_entry,
             "search_title": search_title,
+            "stored_at": stored_at,
         }
     _write_resolved_metadata_cache(cache)
 
@@ -5297,6 +5491,7 @@ def _read_resolved_metadata_cache() -> dict[str, Any]:
 
 
 def _write_resolved_metadata_cache(cache: dict[str, Any]) -> None:
+    _prune_resolved_metadata_cache(cache)
     RESOLVED_METADATA_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_path = RESOLVED_METADATA_CACHE_PATH.with_suffix(".json.tmp")
     with temp_path.open("w", encoding="utf-8") as cache_file:
@@ -5714,6 +5909,8 @@ def _read_user_database() -> dict[str, Any]:
             _normalize_torrent_search_state(anime)
             if _clear_stale_manual_selection(anime):
                 changed = True
+        if _prune_user_database(database):
+            changed = True
         if changed:
             _write_user_database(database)
         return database
@@ -5789,14 +5986,117 @@ def _nfo_text(root: ET.Element, tag: str, value: Any) -> None:
         return
     ET.SubElement(root, tag).text = text
 
+def _prune_user_database(database: dict[str, Any]) -> bool:
+    changed = _prune_ignored_torrents(database)
+    library = database.get("anime") if isinstance(database.get("anime"), list) else []
+    for anime in library:
+        if isinstance(anime, dict):
+            changed = _prune_anime_retained_state(anime) or changed
+    return changed
+
+
+def _prune_ignored_torrents(database: dict[str, Any]) -> bool:
+    ignored = database.get("ignored_torrents")
+    if not isinstance(ignored, list):
+        return False
+    compact = [item for item in ignored if isinstance(item, dict) and str(item.get("key") or "").strip()]
+    compact.sort(key=lambda item: str(item.get("ignored_at") or ""), reverse=True)
+    if MAX_IGNORED_TORRENTS > 0:
+        compact = compact[:MAX_IGNORED_TORRENTS]
+    compact.sort(key=lambda item: str(item.get("ignored_at") or ""))
+    if compact == ignored:
+        return False
+    database["ignored_torrents"] = compact
+    return True
+
+
+def _prune_anime_retained_state(anime: dict[str, Any]) -> bool:
+    changed = False
+    candidates = anime.get("metadata_candidates")
+    if isinstance(candidates, list) and MAX_METADATA_CANDIDATES_PER_ANIME > 0 and len(candidates) > MAX_METADATA_CANDIDATES_PER_ANIME:
+        anime["metadata_candidates"] = candidates[:MAX_METADATA_CANDIDATES_PER_ANIME]
+        changed = True
+
+    queues = _download_queue_items(anime)
+    if queues:
+        compact_queues = [_compact_download_queue(queue) for queue in queues if isinstance(queue, dict)]
+        retained_queues = _retained_download_queues(compact_queues)
+        if retained_queues != queues:
+            anime["download_queues"] = retained_queues
+            _sync_primary_download_queue(anime, retained_queues)
+            changed = True
+    return changed
+
+
+def _compact_download_queue(queue: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(queue)
+    if isinstance(compact.get("flagged_files"), list):
+        compact["flagged_files"] = _limited_list(compact.get("flagged_files"), MAX_FLAGGED_FILES_PER_QUEUE)
+    if isinstance(compact.get("selected_episode_files"), list):
+        compact["selected_episode_files"] = _limited_list(compact.get("selected_episode_files"), MAX_SELECTED_FILES_PER_QUEUE)
+    if isinstance(compact.get("rejected_import_files"), list):
+        compact["rejected_import_files"] = _limited_list(compact.get("rejected_import_files"), MAX_SELECTED_FILES_PER_QUEUE)
+    return compact
+
+
+def _retained_download_queues(queues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if MAX_QUEUE_HISTORY_PER_ANIME <= 0:
+        return queues
+    active_statuses = {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
+    active = [queue for queue in queues if queue.get("status") in active_statuses]
+    history = [queue for queue in queues if queue.get("status") not in active_statuses]
+    if len(history) <= MAX_QUEUE_HISTORY_PER_ANIME:
+        return queues
+    history.sort(key=_queue_retention_sort_value, reverse=True)
+    kept_history_ids = {id(queue) for queue in history[:MAX_QUEUE_HISTORY_PER_ANIME]}
+    return [queue for queue in queues if queue.get("status") in active_statuses or id(queue) in kept_history_ids]
+
+
+def _queue_retention_sort_value(queue: dict[str, Any]) -> str:
+    for key in ("completed_at", "rejected_at", "superseded_at", "queued_at", "ignored_at"):
+        value = str(queue.get(key) or "")
+        if value:
+            return value
+    return ""
+
+
+def _limited_list(value: Any, limit: int) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    if limit <= 0:
+        return value
+    return value[:limit]
+
+
+def _prune_resolved_metadata_cache(cache: dict[str, Any]) -> bool:
+    resolved = cache.get("resolved")
+    if not isinstance(resolved, dict) or MAX_RESOLVED_METADATA_CACHE_ENTRIES <= 0:
+        return False
+    if len(resolved) <= MAX_RESOLVED_METADATA_CACHE_ENTRIES:
+        return False
+    items = list(resolved.items())[-MAX_RESOLVED_METADATA_CACHE_ENTRIES:]
+    cache["resolved"] = dict(items)
+    return True
+
+
+def _serialized_database(database: dict[str, Any]) -> str:
+    return json.dumps(database, indent=2, sort_keys=True) + "\n"
+
+
 def _write_user_database(database: dict[str, Any]) -> None:
+    _prune_user_database(database)
     _sync_anime_nfo_files(database)
+    serialized = _serialized_database(database)
     with _USER_DATABASE_LOCK:
         USER_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if USER_DATABASE_PATH.exists() and USER_DATABASE_PATH.read_text(encoding="utf-8") == serialized:
+                return
+        except OSError:
+            pass
         temp_path = USER_DATABASE_PATH.with_suffix(".json.tmp")
         with temp_path.open("w", encoding="utf-8") as database_file:
-            json.dump(database, database_file, indent=2, sort_keys=True)
-            database_file.write("\n")
+            database_file.write(serialized)
         os.replace(temp_path, USER_DATABASE_PATH)
         try:
             os.chmod(USER_DATABASE_PATH, 0o600)

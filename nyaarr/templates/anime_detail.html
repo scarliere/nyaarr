@@ -123,14 +123,14 @@
             <tbody>
               {% for episode in anime.episodes %}
                 <tr>
-                  <td><strong>{{ episode.label }}</strong></td>
-                  <td>{{ episode.title }}</td>
-                  <td>{{ episode.air_date }}</td>
-                  <td>
+                  <td data-label="Episode"><strong>{{ episode.label }}</strong></td>
+                  <td data-label="Title">{{ episode.title }}</td>
+                  <td data-label="Air Date">{{ episode.air_date }}</td>
+                  <td data-label="Status">
                     <span class="episode-state {{ episode.tone }}">{{ episode.status }}{% if episode.progress is not none and episode.status not in ['Downloaded', 'Imported'] %} {{ episode.progress }}%{% endif %}</span>
                   </td>
-                  <td>{{ episode.quality }}</td>
-                  <td>
+                  <td data-label="Quality">{{ episode.quality }}</td>
+                  <td data-label="File">
                     {% if episode.file %}
                       <span title="{{ episode.path }}">{{ episode.file }}</span>
                     {% elif episode.tone == "missing" %}

@@ -95,9 +95,13 @@
         <h2>Torrent preferences</h2>
       </div>
       <form class="settings-form" action="{{ url_for('update_torrent_preferences') }}" method="post">
-        <label for="preferred-subbers">Preferred subbers</label>
-        <textarea id="preferred-subbers" name="preferred_subbers" rows="4" placeholder="SubsPlease">{{ settings.preferred_subbers_text }}</textarea>
-        <p>Nyaarr searches these release groups first. SubsPlease is kept as the default preferred subber.</p>
+        <div class="settings-label-row">
+          <label for="preferred-subbers">Preferred subbers</label>
+          <span class="settings-help" tabindex="0" aria-label="Preferred subbers format" aria-describedby="preferred-subbers-help">?</span>
+          <span id="preferred-subbers-help" class="settings-tooltip" role="tooltip">Add one release group per line or separate names with commas, for example SubsPlease, Erai-raws, Judas. Order matters: higher names are searched first. Spaces alone are not separators.</span>
+        </div>
+        <textarea id="preferred-subbers" name="preferred_subbers" rows="4" placeholder="SubsPlease, Erai-raws, Judas">{{ settings.preferred_subbers_text }}</textarea>
+        <p>Nyaarr searches these release groups in order. SubsPlease is kept as the default preferred subber.</p>
         <label for="torrent-confidence-threshold">Automatic confidence threshold</label>
         <input id="torrent-confidence-threshold" name="torrent_confidence_threshold" type="number" min="1" max="100" value="{{ settings.torrent_confidence_threshold }}">
         <button class="primary" type="submit">Save torrent preferences</button>

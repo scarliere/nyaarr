@@ -1,9 +1,31 @@
 import os
+import sys
+from pathlib import Path
 
 from nyaarr import create_app
+from nyaarr.single_instance import SingleInstanceError, SingleInstanceLock
 
 
-app = create_app()
+_instance_lock: SingleInstanceLock | None = None
+
+
+def _lock_path() -> Path:
+    return Path(os.environ.get("NYAARR_INSTANCE_LOCK_PATH", "data/user/nyaarr.lock"))
+
+
+def _create_locked_app():
+    global _instance_lock
+    if os.environ.get("NYAARR_DISABLE_INSTANCE_LOCK") != "1":
+        _instance_lock = SingleInstanceLock(_lock_path())
+        _instance_lock.acquire()
+    return create_app()
+
+
+try:
+    app = _create_locked_app()
+except SingleInstanceError as exc:
+    print(f"Nyaarr is already running: {exc}", file=sys.stderr)
+    raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":

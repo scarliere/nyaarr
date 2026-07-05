@@ -1149,6 +1149,60 @@ h1 {
   letter-spacing: 0.08em;
 }
 
+.settings-label-row {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+}
+
+.settings-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--soft);
+  background: #121923;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: help;
+}
+
+.settings-help:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 4;
+  display: none;
+  width: min(420px, 80vw);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--soft);
+  background: #101722;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.26);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.settings-label-row:hover .settings-tooltip,
+.settings-label-row:focus-within .settings-tooltip {
+  display: block;
+}
+
 .settings-form input {
   flex: 1;
   min-width: 0;
@@ -2443,4 +2497,283 @@ h1 {
   border: 0;
   text-align: left;
   cursor: pointer;
+}
+
+
+.dashboard-hero {
+  align-items: center;
+}
+
+.attention-grid,
+.dashboard-flow-grid,
+.setup-checklist {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+.attention-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+  padding-top: 18px;
+}
+
+.attention-card,
+.setup-checklist,
+.dashboard-panel {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.attention-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  min-height: 118px;
+  padding: 16px;
+  border-top-width: 3px;
+}
+
+.attention-card.yellow { border-top-color: var(--yellow); }
+.attention-card.red { border-top-color: var(--red); }
+.attention-card.blue { border-top-color: var(--accent); }
+.attention-card.green { border-top-color: var(--green); }
+
+.attention-card span,
+.setup-step p,
+.dashboard-row span,
+.recent-anime-row span,
+.dashboard-empty {
+  color: var(--muted);
+}
+
+.attention-card strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 30px;
+}
+
+.attention-card p,
+.setup-step p,
+.dashboard-empty {
+  margin: 6px 0 0;
+}
+
+.setup-checklist {
+  margin: 18px 24px 0;
+  padding: 0;
+}
+
+.setup-step-list {
+  display: grid;
+}
+
+.setup-step {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.setup-step:first-child {
+  border-top: 0;
+}
+
+.setup-step > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: #211700;
+  background: var(--yellow);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.setup-step.complete > span {
+  color: #03170c;
+  background: var(--green);
+}
+
+.dashboard-flow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  padding-bottom: 18px;
+}
+
+.dashboard-list,
+.recent-anime-list {
+  display: grid;
+  padding: 12px 16px 16px;
+}
+
+.dashboard-row,
+.recent-anime-row {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.dashboard-row:first-child,
+.recent-anime-row:first-child {
+  border-top: 0;
+}
+
+.dashboard-row {
+  grid-template-columns: minmax(0, 1fr) 54px;
+}
+
+.dashboard-row em {
+  color: var(--accent);
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.recent-anime-row {
+  grid-template-columns: 42px minmax(0, 1fr);
+  color: inherit;
+  text-decoration: none;
+}
+
+.recent-anime-row:hover strong {
+  color: #fff;
+}
+
+.recent-anime-row img,
+.recent-anime-placeholder {
+  width: 42px;
+  height: 58px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: #0b0f15;
+}
+
+.recent-anime-row img.poster-fallback-image,
+.recent-anime-placeholder {
+  object-fit: contain;
+  background-image: url("../img/default-icon.png");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 70%;
+}
+
+.advanced-add-options {
+  min-width: min(100%, 320px);
+}
+
+.advanced-add-options summary {
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--soft);
+  background: #1e2735;
+  cursor: pointer;
+}
+
+.advanced-add-options[open] summary {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 760px) {
+  .attention-grid,
+  .dashboard-flow-grid,
+  .setup-checklist {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .attention-card,
+  .setup-step {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .attention-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .setup-checklist {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+
+  .dashboard-flow-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-table-wrap {
+    overflow-x: visible;
+  }
+
+  .activity-table,
+  .manual-selection-table,
+  .anime-episode-table,
+  .system-logs-table {
+    min-width: 0;
+  }
+
+  .activity-table thead {
+    display: none;
+  }
+
+  .activity-table tbody,
+  .activity-table tr,
+  .activity-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .activity-table tr {
+    margin: 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #121923;
+  }
+
+  .activity-table td {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .activity-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .activity-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .activity-table td.activity-empty,
+  .activity-table td.activity-loading-cell {
+    display: block;
+  }
+
+  .activity-table td.activity-empty::before,
+  .activity-table td.activity-loading-cell::before {
+    content: none;
+  }
+
+  .activity-progress-cell {
+    grid-template-columns: minmax(0, 1fr) 42px;
+  }
 }

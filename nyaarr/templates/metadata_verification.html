@@ -88,12 +88,12 @@
             <tbody>
               {% for candidate in item.candidates %}
                 <tr>
-                  <td><strong>{{ candidate.title }}</strong></td>
-                  <td>{{ candidate.original_title }}</td>
-                  <td>{{ candidate.year }}</td>
-                  <td>{{ candidate.source }}</td>
-                  <td>{{ candidate.aliases|join(', ') or '-' }}</td>
-                  <td>
+                  <td data-label="Candidate"><strong>{{ candidate.title }}</strong></td>
+                  <td data-label="Original Title">{{ candidate.original_title }}</td>
+                  <td data-label="Year">{{ candidate.year }}</td>
+                  <td data-label="Source">{{ candidate.source }}</td>
+                  <td data-label="Aliases">{{ candidate.aliases|join(', ') or '-' }}</td>
+                  <td data-label="Action">
                     <form class="metadata-verification-action" action="{{ url_for('select_metadata_verification') }}" method="post">
                       <input type="hidden" name="library_id" value="{{ item.library_id }}">
                       <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">

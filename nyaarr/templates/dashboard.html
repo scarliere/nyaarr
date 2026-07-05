@@ -1,15 +1,63 @@
 {% extends layout_template|default("base.html") %}
 
-{% block title %}Nyaarr - Anime{% endblock %}
+{% block title %}Nyaarr - Home{% endblock %}
 
 {% block content %}
-  <section class="hero">
+  <section class="hero dashboard-hero">
     <div>
-      <p class="eyebrow">Anime dashboard</p>
-      <h1>Anime library</h1>
-      <p class="hero-copy">Monitor wanted episodes, inspect Nyaa releases, and keep import decisions visible.</p>
+      <p class="eyebrow">Home</p>
+      <h1>What needs attention</h1>
+      <p class="hero-copy">Review setup, manual decisions, active downloads, and recent library changes from one place.</p>
+    </div>
+    <div class="hero-actions">
+      <a class="button primary" href="{{ url_for('add_anime') }}">Add Anime</a>
+      <a class="button" href="{{ url_for('settings') }}">Settings</a>
     </div>
   </section>
+
+  <section class="attention-grid" aria-label="Attention summary">
+    {% if dashboard.attention_items %}
+      {% for item in dashboard.attention_items %}
+        <article class="attention-card {{ item.tone }}">
+          <div>
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <p>{{ item.description }}</p>
+          </div>
+          <a class="button" href="{{ item.action_url }}">{{ item.action_label }}</a>
+        </article>
+      {% endfor %}
+    {% else %}
+      <article class="attention-card green calm">
+        <div>
+          <span>All clear</span>
+          <strong>0</strong>
+          <p>No setup, metadata, torrent, or activity decisions need attention right now.</p>
+        </div>
+        <a class="button" href="{{ url_for('add_anime') }}">Add Anime</a>
+      </article>
+    {% endif %}
+  </section>
+
+  {% if not dashboard.setup_complete %}
+    <section class="setup-checklist" aria-label="Setup checklist">
+      <div class="section-heading">
+        <h2>Setup checklist</h2>
+      </div>
+      <div class="setup-step-list">
+        {% for step in dashboard.setup_steps %}
+          <article class="setup-step {% if step.complete %}complete{% endif %}">
+            <span aria-hidden="true">{% if step.complete %}✓{% else %}!{% endif %}</span>
+            <div>
+              <strong>{{ step.label }}</strong>
+              <p>{{ step.description }}</p>
+            </div>
+            {% if not step.complete %}<a class="button" href="{{ step.action_url }}">{{ step.action_label }}</a>{% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
 
   <section class="stats-grid" aria-label="Library summary">
     {% for item in stats %}
@@ -20,10 +68,56 @@
     {% endfor %}
   </section>
 
-  <section class="content-grid anime-content-grid">
+  <section class="dashboard-flow-grid">
+    <section class="anime-panel dashboard-panel">
+      <div class="section-heading compact">
+        <h2>Active downloads</h2>
+        <a class="button" href="{{ url_for('activity') }}">Open Activity</a>
+      </div>
+      <div class="dashboard-list">
+        {% for row in dashboard.active_downloads %}
+          <article class="dashboard-row">
+            <div>
+              <strong>{{ row.anime }}</strong>
+              <span>{{ row.title }}</span>
+            </div>
+            <em>{{ row.progress }}%</em>
+          </article>
+        {% else %}
+          <p class="dashboard-empty">No active downloads.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="anime-panel dashboard-panel">
+      <div class="section-heading compact">
+        <h2>Recent library</h2>
+        <a class="button" href="{{ url_for('dashboard') }}#anime-library">View Library</a>
+      </div>
+      <div class="recent-anime-list">
+        {% for anime in dashboard.recent_anime %}
+          <a class="recent-anime-row" href="{{ url_for('anime_detail', library_id=anime.library_id) }}">
+            {% if anime.poster %}
+              <img src="{{ anime.poster }}" alt="" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
+            {% else %}
+              <span class="recent-anime-placeholder" aria-hidden="true"></span>
+            {% endif %}
+            <div>
+              <strong>{{ anime.title }}</strong>
+              <span>{{ anime.state }}</span>
+            </div>
+          </a>
+        {% else %}
+          <p class="dashboard-empty">No anime added yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </section>
+
+  <section id="anime-library" class="content-grid anime-content-grid">
     <div class="anime-panel">
       <div class="section-heading">
-        <h2>Anime</h2>
+        <h2>Anime library</h2>
       </div>
 
       {% if loading|default(false) %}
@@ -112,6 +206,3 @@
     </div>
   </section>
 {% endblock %}
-
-
-

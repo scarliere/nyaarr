@@ -277,6 +277,28 @@ def test_base_shell_polls_root_scan_progress_for_sidebar_badges(monkeypatch) -> 
     assert b'scheduleRootScanSidebarWatcher(10000)' in response.data
 
 
+
+def test_settings_preferred_subbers_tooltip_explains_separators(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
+    monkeypatch.setattr(
+        nyaarr,
+        "user_settings",
+        lambda: nyaarr._empty_settings_model()
+        | {"preferred_subbers_text": "SubsPlease", "torrent_confidence_threshold": 70},
+    )
+    monkeypatch.setattr(nyaarr, "root_folder_missing", lambda: True)
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).get("/settings")
+
+    assert response.status_code == 200
+    assert b"Preferred subbers format" in response.data
+    assert b"separate names with commas" in response.data
+    assert b"Order matters" in response.data
+    assert b"Spaces alone are not separators" in response.data
+
 def test_settings_root_scan_starts_global_sidebar_watcher(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
     monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)

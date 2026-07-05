@@ -8,6 +8,7 @@ Current sections:
 
 - `architecture/flask-app.md`: Flask app structure, port, routes, and frontend layout.
 - `architecture/codex-skills.md`: Repo-local Codex skill references and usage rules.
+- `architecture/resource-management.md`: Process, cache, retention, and scan resource guardrails.
 - `architecture/user-data.md`: Client-local JSON user data storage.
 - `features/add-anime.md`: Add Anime search flow and UI behavior.
 - `features/settings-root-folder.md`: Settings root folder configuration and local import scan.
