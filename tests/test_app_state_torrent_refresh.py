@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from nyaarr import app_state, qbittorrent_client
@@ -926,6 +927,54 @@ def test_root_scan_merges_partial_folder_into_existing_anime_and_marks_missing(m
     assert '<uniqueid type="anilist" default="true">179950</uniqueid>' in nfo.read_text(encoding="utf-8")
     assert app_state._missing_episode_numbers(anime) == [1, 2, 6, 7, 8, 9, 10, 11, 12, 13]
     assert anime["torrent_search"]["strategy"] == "Queued for background torrent search"
+
+
+def test_root_scan_keeps_new_candidate_unmonitored_when_title_was_paused(tmp_path) -> None:
+    root = tmp_path / "Anime"
+    folder = root / "Chiikawa"
+    folder.mkdir(parents=True)
+    media_file = folder / "Chiikawa.S01E01.1080p.mkv"
+    media_file.write_bytes(b"")
+    database = {
+        "settings": {"root_folder": str(root)},
+        "events": [],
+        "anime": [
+            {
+                "library_id": "AniList:170182",
+                "title": "Chiikawa",
+                "original_title": "Chiikawa",
+                "episodes": "200",
+                "status": "Releasing",
+                "monitored": False,
+                "quality_resolution": "1080p",
+                "provider_ids": {"anilist": "170182"},
+                "torrent_search": {"strategy": "Torrent search paused because anime is unmonitored", "candidates": []},
+            }
+        ],
+    }
+    candidate = {
+        "library_id": f"root-folder:{app_state._stable_path_id(folder.resolve())}",
+        "title": "Chiikawa",
+        "original_title": "Chiikawa",
+        "episodes": "1",
+        "status": "Unknown",
+        "monitored": True,
+        "quality_resolution": "1080p",
+        "local_path": str(folder.resolve()),
+        "episode_files": [str(media_file.resolve())],
+        "torrent_search": {"query": "Chiikawa", "strategy": "Imported from root folder scan", "candidates": []},
+    }
+    summary = app_state._empty_scan_summary()
+
+    stored = app_state._store_root_folder_candidate(database, candidate, summary)
+
+    assert summary["imported"] == 1
+    assert len(database["anime"]) == 2
+    assert stored["library_id"].startswith("root-folder:")
+    assert stored["monitored"] is False
+    assert stored["library_state"] == "Paused"
+    assert stored["torrent_manual_selection"] == {"required": False}
+    assert stored["torrent_search"]["strategy"] == "Torrent search paused because anime is unmonitored"
 
 
 def test_root_scan_removes_existing_root_folder_duplicate_when_provider_item_uses_same_folder(monkeypatch, tmp_path) -> None:
@@ -3558,7 +3607,127 @@ def test_update_anime_preferences_unmonitor_clears_active_queues_and_keeps_histo
     assert anime["torrent_search"]["strategy"] == "Torrent search paused because anime is unmonitored"
     assert anime["torrent_search"]["candidates"] == []
     assert "checked_at" not in anime["torrent_search"]
+    assert database["unmonitored_titles"][0]["title_key"] == "petals of reincarnation"
     assert writes == [database]
+
+
+
+def test_unmonitored_title_pruning_archives_overflow_to_cold_storage(monkeypatch, tmp_path) -> None:
+    cold_path = tmp_path / "cold" / "unmonitored.jsonl"
+    monkeypatch.setattr(app_state, "UNMONITORED_TITLES_COLD_STORAGE_PATH", cold_path)
+    monkeypatch.setattr(app_state, "MAX_UNMONITORED_TITLE_ENTRIES", 2)
+    database = {
+        "unmonitored_titles": [
+            {"title": "Old A", "title_key": "old a", "provider_ids": {"anilist": "1"}, "recorded_at": "2026-01-01T00:00:00+00:00"},
+            {"title": "Hot B", "title_key": "hot b", "provider_ids": {"anilist": "2"}, "recorded_at": "2026-01-02T00:00:00+00:00"},
+            {"title": "Hot C", "title_key": "hot c", "provider_ids": {"anilist": "3"}, "recorded_at": "2026-01-03T00:00:00+00:00"},
+        ]
+    }
+
+    changed = app_state._prune_unmonitored_titles(database)
+
+    assert changed is True
+    assert [entry["title_key"] for entry in database["unmonitored_titles"]] == ["hot b", "hot c"]
+    lines = cold_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    archived = json.loads(lines[0])
+    assert archived["action"] == "pause"
+    assert archived["payload"]["title_key"] == "old a"
+
+
+def test_root_scan_uses_cold_unmonitored_title_marker(monkeypatch, tmp_path) -> None:
+    cold_path = tmp_path / "cold" / "unmonitored.jsonl"
+    monkeypatch.setattr(app_state, "UNMONITORED_TITLES_COLD_STORAGE_PATH", cold_path)
+    app_state._append_unmonitored_title_cold_event(
+        "pause",
+        {
+            "title": "Chiikawa",
+            "title_key": "chiikawa",
+            "provider_ids": {"anilist": "170182"},
+            "library_id": "AniList:170182",
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
+    database = {"settings": {"root_folder": str(tmp_path)}, "events": [], "anime": [], "unmonitored_titles": []}
+    candidate = {
+        "library_id": "root-folder:chiikawa",
+        "title": "Chiikawa",
+        "original_title": "Chiikawa",
+        "episodes": "1",
+        "status": "Unknown",
+        "monitored": True,
+        "quality_resolution": "1080p",
+        "provider_ids": {"anilist": "170182"},
+        "torrent_search": {"query": "Chiikawa", "strategy": "Imported from root folder scan", "candidates": []},
+    }
+    summary = app_state._empty_scan_summary()
+
+    stored = app_state._store_root_folder_candidate(database, candidate, summary)
+
+    assert stored["monitored"] is False
+    assert stored["library_state"] == "Paused"
+    assert stored["torrent_search"]["strategy"] == "Torrent search paused because anime is unmonitored"
+
+
+def test_cold_unmonitored_title_unpause_event_overrides_pause(monkeypatch, tmp_path) -> None:
+    cold_path = tmp_path / "cold" / "unmonitored.jsonl"
+    monkeypatch.setattr(app_state, "UNMONITORED_TITLES_COLD_STORAGE_PATH", cold_path)
+    entry = {
+        "title": "Chiikawa",
+        "title_key": "chiikawa",
+        "provider_ids": {"anilist": "170182"},
+        "library_id": "AniList:170182",
+        "recorded_at": "2026-01-01T00:00:00+00:00",
+    }
+    app_state._append_unmonitored_title_cold_event("pause", entry)
+    app_state._append_unmonitored_title_cold_event("unpause", entry)
+
+    assert app_state._cold_unmonitored_title_match({"title": "Chiikawa", "provider_ids": {"anilist": "170182"}}) is False
+
+def test_update_anime_preferences_remonitor_removes_unmonitored_title_guard(monkeypatch) -> None:
+    database = {
+        "settings": {"root_folder": "C:/Anime"},
+        "events": [],
+        "unmonitored_titles": [
+            {
+                "title": "Petals of Reincarnation",
+                "title_key": "petals of reincarnation",
+                "provider_ids": {"anilist": "179950"},
+                "library_id": "anime-1",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+        "anime": [
+            {
+                "library_id": "anime-1",
+                "title": "Petals of Reincarnation",
+                "original_title": "Petals of Reincarnation",
+                "provider_ids": {"anilist": "179950"},
+                "quality_resolution": "1080p",
+                "season_number": 1,
+                "monitored": False,
+                "episodes": "12",
+                "completion": {"expected_episodes": 12, "local_episodes": 1, "progress_target": 12, "missing_episodes": 11},
+                "torrent_search": {"strategy": "Torrent search paused because anime is unmonitored", "candidates": []},
+            }
+        ],
+    }
+    writes = []
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    success, message = app_state.update_anime_preferences(
+        "anime-1", {"quality_resolution": "1080p", "season_number": "1", "monitored": "on"}
+    )
+
+    anime = database["anime"][0]
+    assert success is True
+    assert message == "Anime preferences saved."
+    assert anime["monitored"] is True
+    assert database["unmonitored_titles"] == []
+    assert anime["torrent_search"]["strategy"] == "Queued for background torrent search"
+    assert writes == [database]
+
 
 def test_delete_anime_removes_library_item_without_touching_files(monkeypatch) -> None:
     database = {"settings": {}, "events": [], "anime": [{"library_id": "anime-1", "title": "Petals"}, {"library_id": "anime-2", "title": "Other"}]}

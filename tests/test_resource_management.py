@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from nyaarr import app_state, torrent_finder
 from nyaarr.single_instance import SingleInstanceError, SingleInstanceLock
 
 
-def test_prune_user_database_caps_ignored_torrents_and_queue_history(monkeypatch) -> None:
+def test_prune_user_database_caps_ignored_torrents_and_queue_history(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app_state, "IGNORED_TORRENTS_COLD_STORAGE_PATH", tmp_path / "ignored.jsonl")
+    monkeypatch.setattr(app_state, "DOWNLOAD_QUEUES_COLD_STORAGE_PATH", tmp_path / "queues.jsonl")
+    monkeypatch.setattr(app_state, "METADATA_CANDIDATES_COLD_STORAGE_PATH", tmp_path / "metadata-candidates.jsonl")
     monkeypatch.setattr(app_state, "MAX_IGNORED_TORRENTS", 2)
     monkeypatch.setattr(app_state, "MAX_QUEUE_HISTORY_PER_ANIME", 2)
     monkeypatch.setattr(app_state, "MAX_METADATA_CANDIDATES_PER_ANIME", 2)
@@ -29,6 +33,7 @@ def test_prune_user_database_caps_ignored_torrents_and_queue_history(monkeypatch
                         "status": "queued",
                         "flagged_files": [{"name": "one.exe"}, {"name": "two.exe"}],
                         "selected_episode_files": [{"episode": 1}, {"episode": 2}],
+                        "rejected_import_files": [{"episode": 3}, {"episode": 4}],
                     },
                 ],
             }
@@ -44,15 +49,34 @@ def test_prune_user_database_caps_ignored_torrents_and_queue_history(monkeypatch
     assert anime["download_queue"]["status"] == "queued"
     assert anime["download_queue"]["flagged_files"] == [{"name": "one.exe"}]
     assert anime["download_queue"]["selected_episode_files"] == [{"episode": 1}]
+    assert anime["download_queue"]["rejected_import_files"] == [{"episode": 3}]
+
+    ignored_records = [json.loads(line) for line in app_state.IGNORED_TORRENTS_COLD_STORAGE_PATH.read_text(encoding="utf-8").splitlines()]
+    assert ignored_records[0]["action"] == "ignore"
+    assert ignored_records[0]["payload"]["key"] == "old"
+    assert "old" in app_state._cold_ignored_torrent_keys()
+
+    queue_records = [json.loads(line) for line in app_state.DOWNLOAD_QUEUES_COLD_STORAGE_PATH.read_text(encoding="utf-8").splitlines()]
+    queue_actions = [record["action"] for record in queue_records]
+    assert "queue_history" in queue_actions
+    assert queue_actions.count("queue_field_overflow") == 3
+
+    candidate_records = [json.loads(line) for line in app_state.METADATA_CANDIDATES_COLD_STORAGE_PATH.read_text(encoding="utf-8").splitlines()]
+    assert candidate_records[0]["action"] == "metadata_candidate"
+    assert candidate_records[0]["payload"]["candidate"] == {"id": 3}
 
 
-def test_prune_resolved_metadata_cache_keeps_latest_entries(monkeypatch) -> None:
+def test_prune_resolved_metadata_cache_keeps_latest_entries(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(app_state, "MAX_RESOLVED_METADATA_CACHE_ENTRIES", 2)
-    cache = {"resolved": {"one": {}, "two": {}, "three": {}}}
+    monkeypatch.setattr(app_state, "RESOLVED_METADATA_COLD_STORAGE_PATH", tmp_path / "resolved-cache.jsonl")
+    cache = {"resolved": {"one": {"title": "One"}, "two": {}, "three": {}}}
 
     assert app_state._prune_resolved_metadata_cache(cache) is True
 
     assert list(cache["resolved"]) == ["two", "three"]
+    records = [json.loads(line) for line in app_state.RESOLVED_METADATA_COLD_STORAGE_PATH.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["action"] == "resolved_metadata_cache"
+    assert records[0]["payload"] == {"key": "one", "value": {"title": "One"}}
 
 
 def test_rss_cache_prune_removes_expired_and_oldest(monkeypatch) -> None:

@@ -39,6 +39,22 @@ SESSION_SECRET_PATH = Path(os.environ.get("NYAARR_SESSION_SECRET_PATH", USER_DAT
 RESOLVED_METADATA_CACHE_PATH = Path(
     os.environ.get("NYAARR_RESOLVED_METADATA_CACHE_PATH", "data/cache/resolved-anime-metadata.json")
 )
+COLD_STORAGE_DIR = Path(os.environ.get("NYAARR_COLD_STORAGE_DIR", USER_DATA_DIR / "cold"))
+UNMONITORED_TITLES_COLD_STORAGE_PATH = Path(
+    os.environ.get("NYAARR_UNMONITORED_TITLES_COLD_STORAGE_PATH", COLD_STORAGE_DIR / "unmonitored-titles.jsonl")
+)
+IGNORED_TORRENTS_COLD_STORAGE_PATH = Path(
+    os.environ.get("NYAARR_IGNORED_TORRENTS_COLD_STORAGE_PATH", COLD_STORAGE_DIR / "ignored-torrents.jsonl")
+)
+DOWNLOAD_QUEUES_COLD_STORAGE_PATH = Path(
+    os.environ.get("NYAARR_DOWNLOAD_QUEUES_COLD_STORAGE_PATH", COLD_STORAGE_DIR / "download-queues.jsonl")
+)
+METADATA_CANDIDATES_COLD_STORAGE_PATH = Path(
+    os.environ.get("NYAARR_METADATA_CANDIDATES_COLD_STORAGE_PATH", COLD_STORAGE_DIR / "metadata-candidates.jsonl")
+)
+RESOLVED_METADATA_COLD_STORAGE_PATH = Path(
+    os.environ.get("NYAARR_RESOLVED_METADATA_COLD_STORAGE_PATH", COLD_STORAGE_DIR / "resolved-metadata-cache.jsonl")
+)
 DATABASE_SCHEMA_VERSION = 1
 DEFAULT_DISPLAY_TIMEZONE = "GMT+8"
 DEFAULT_PREFERRED_SUBBERS = ["SubsPlease"]
@@ -110,6 +126,7 @@ ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_ANILIST_ME
 EXTERNAL_REQUEST_SPACING_SECONDS = float(os.environ.get("NYAARR_EXTERNAL_REQUEST_SPACING_SECONDS", "2.0"))
 ROOT_IMPORT_METADATA_ON_SAVE = os.environ.get("NYAARR_ROOT_IMPORT_METADATA_ON_SAVE") == "1"
 MAX_IGNORED_TORRENTS = int(os.environ.get("NYAARR_MAX_IGNORED_TORRENTS", "500"))
+MAX_UNMONITORED_TITLE_ENTRIES = int(os.environ.get("NYAARR_MAX_UNMONITORED_TITLE_ENTRIES", "500"))
 MAX_QUEUE_HISTORY_PER_ANIME = int(os.environ.get("NYAARR_MAX_QUEUE_HISTORY_PER_ANIME", "75"))
 MAX_METADATA_CANDIDATES_PER_ANIME = int(os.environ.get("NYAARR_MAX_METADATA_CANDIDATES_PER_ANIME", "10"))
 MAX_FLAGGED_FILES_PER_QUEUE = int(os.environ.get("NYAARR_MAX_FLAGGED_FILES_PER_QUEUE", "25"))
@@ -1271,16 +1288,19 @@ def update_anime_preferences(library_id: str, form: dict[str, Any]) -> tuple[boo
     _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
     cleanup_messages = []
     if not anime["monitored"]:
+        _remember_unmonitored_title(database, anime)
         cleanup = _clear_download_plan_for_unmonitored(anime)
         if cleanup["removed_queues"]:
             cleanup_messages.append(f"Cleared {cleanup['removed_queues']} active queued download(s).")
-    elif old_quality != _quality_resolution(anime) or old_season != anime["season_number"]:
-        cleanup = _clear_download_plan_for_metadata_override(anime)
-        _mark_torrent_search_pending(anime)
-        if cleanup["removed_queues"]:
-            cleanup_messages.append(f"Cleared {cleanup['removed_queues']} active queued download(s).")
-    elif not old_monitored and not _download_need_satisfied(anime):
-        _mark_torrent_search_pending(anime)
+    else:
+        _forget_unmonitored_title(database, anime)
+        if old_quality != _quality_resolution(anime) or old_season != anime["season_number"]:
+            cleanup = _clear_download_plan_for_metadata_override(anime)
+            _mark_torrent_search_pending(anime)
+            if cleanup["removed_queues"]:
+                cleanup_messages.append(f"Cleared {cleanup['removed_queues']} active queued download(s).")
+        elif not old_monitored and not _download_need_satisfied(anime):
+            _mark_torrent_search_pending(anime)
     cleanup_message = f" {' '.join(cleanup_messages)}" if cleanup_messages else ""
     _record_event(database, "library", f"Updated anime preferences for {anime.get('title', 'anime')}.{cleanup_message}", anime)
     _write_user_database(database)
@@ -4092,13 +4112,25 @@ def _record_ignored_torrent(database: dict[str, Any], anime: dict[str, Any], tor
 
 def _ignored_torrent_keys(database: dict[str, Any]) -> set[str]:
     ignored_torrents = database.get("ignored_torrents")
-    if not isinstance(ignored_torrents, list):
-        return set()
-    return {
+    keys = {
         str(item.get("key") or "")
-        for item in ignored_torrents
+        for item in (ignored_torrents if isinstance(ignored_torrents, list) else [])
         if isinstance(item, dict) and str(item.get("key") or "").strip()
     }
+    keys.update(_cold_ignored_torrent_keys())
+    return keys
+
+
+def _cold_ignored_torrent_keys() -> set[str]:
+    keys: set[str] = set()
+    for record in _iter_cold_storage_events(IGNORED_TORRENTS_COLD_STORAGE_PATH) or []:
+        if str(record.get("action") or "ignore") != "ignore":
+            continue
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        key = str(payload.get("key") or "").strip()
+        if key:
+            keys.add(key)
+    return keys
 
 
 def _torrent_ignore_key(torrent: dict[str, Any]) -> str:
@@ -4166,6 +4198,172 @@ def _import_root_folder_children(database: dict[str, Any], root_folder: Path, ch
     return summary
 
 
+def _append_cold_storage_event(path: Path, action: str, payload: dict[str, Any]) -> None:
+    record = {"action": action, "payload": payload, "recorded_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as cold_file:
+            cold_file.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        return
+
+def _iter_cold_storage_events(path: Path) -> Any:
+    try:
+        cold_file = path.open("r", encoding="utf-8")
+    except OSError:
+        return
+    with cold_file:
+        for line in cold_file:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield record
+
+
+def _monitoring_title_keys(anime: dict[str, Any]) -> set[str]:
+    values = [anime.get("title"), anime.get("original_title")]
+    aliases = anime.get("aliases")
+    if isinstance(aliases, list):
+        values.extend(aliases)
+    return {_metadata_compare_value(value) for value in values if _metadata_compare_value(value)}
+
+
+def _monitoring_provider_ids(anime: dict[str, Any]) -> dict[str, str]:
+    provider_ids = anime.get("provider_ids") if isinstance(anime.get("provider_ids"), dict) else {}
+    return {str(provider): str(value).strip() for provider, value in provider_ids.items() if str(value or "").strip()}
+
+
+def _unmonitored_entry_matches_anime(entry: dict[str, Any], anime: dict[str, Any]) -> bool:
+    entry_ids = entry.get("provider_ids") if isinstance(entry.get("provider_ids"), dict) else {}
+    anime_ids = _monitoring_provider_ids(anime)
+    for provider, value in entry_ids.items():
+        if str(value or "").strip() and anime_ids.get(str(provider)) == str(value).strip():
+            return True
+    title_key = str(entry.get("title_key") or "").strip()
+    return bool(title_key and title_key in _monitoring_title_keys(anime))
+
+
+def _unmonitored_library_title_match(database: dict[str, Any], anime: dict[str, Any]) -> bool:
+    for existing in database.get("anime", []):
+        if not isinstance(existing, dict) or existing.get("monitored") is not False:
+            continue
+        if str(existing.get("library_id") or "") == str(anime.get("library_id") or ""):
+            return True
+        if _unmonitored_entry_matches_anime(_unmonitored_title_entry(existing), anime):
+            return True
+    return False
+
+
+def _unmonitored_title_entry(anime: dict[str, Any]) -> dict[str, Any]:
+    title = str(anime.get("title") or anime.get("original_title") or "").strip()
+    keys = _monitoring_title_keys(anime)
+    return {
+        "title": title,
+        "title_key": _metadata_compare_value(title) or (sorted(keys)[0] if keys else ""),
+        "provider_ids": _monitoring_provider_ids(anime),
+        "library_id": str(anime.get("library_id") or "").strip(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _title_is_unmonitored(database: dict[str, Any], anime: dict[str, Any]) -> bool:
+    entries = database.get("unmonitored_titles") if isinstance(database.get("unmonitored_titles"), list) else []
+    if any(isinstance(entry, dict) and _unmonitored_entry_matches_anime(entry, anime) for entry in entries):
+        return True
+    if _unmonitored_library_title_match(database, anime):
+        return True
+    cold_match = _cold_unmonitored_title_match(anime)
+    return bool(cold_match) if cold_match is not None else False
+
+
+def _remember_unmonitored_title(database: dict[str, Any], anime: dict[str, Any]) -> None:
+    entries = database.setdefault("unmonitored_titles", [])
+    if not isinstance(entries, list):
+        entries = []
+        database["unmonitored_titles"] = entries
+    entry = _unmonitored_title_entry(anime)
+    entries[:] = [existing for existing in entries if not (isinstance(existing, dict) and _unmonitored_entry_matches_anime(existing, anime))]
+    entries.append(entry)
+
+
+def _forget_unmonitored_title(database: dict[str, Any], anime: dict[str, Any]) -> None:
+    entries = database.get("unmonitored_titles")
+    removed_hot = False
+    if isinstance(entries, list):
+        kept = [entry for entry in entries if not (isinstance(entry, dict) and _unmonitored_entry_matches_anime(entry, anime))]
+        removed_hot = len(kept) != len(entries)
+        database["unmonitored_titles"] = kept
+    if removed_hot or _cold_unmonitored_title_match(anime) is True:
+        _append_unmonitored_title_cold_event("unpause", _unmonitored_title_entry(anime))
+
+
+def _append_unmonitored_title_cold_event(action: str, entry: dict[str, Any]) -> None:
+    normalized = _normalized_unmonitored_title_entry(entry)
+    if normalized is None:
+        return
+    _append_cold_storage_event(UNMONITORED_TITLES_COLD_STORAGE_PATH, action, normalized)
+
+def _archive_unmonitored_title_entries(entries: list[dict[str, Any]]) -> None:
+    for entry in entries:
+        _append_unmonitored_title_cold_event("pause", entry)
+
+
+def _cold_unmonitored_title_match(anime: dict[str, Any]) -> bool | None:
+    try:
+        cold_file = UNMONITORED_TITLES_COLD_STORAGE_PATH.open("r", encoding="utf-8")
+    except OSError:
+        return None
+    matched: bool | None = None
+    with cold_file:
+        for line in cold_file:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload") if isinstance(record.get("payload"), dict) else record.get("entry")
+            entry = payload if isinstance(payload, dict) else {}
+            if not _unmonitored_entry_matches_anime(entry, anime):
+                continue
+            matched = str(record.get("action") or "pause") == "pause"
+    return matched
+
+
+def _normalized_unmonitored_title_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    title_key = str(entry.get("title_key") or "").strip()
+    provider_ids = entry.get("provider_ids") if isinstance(entry.get("provider_ids"), dict) else {}
+    normalized_ids = {str(provider): str(value).strip() for provider, value in provider_ids.items() if str(value or "").strip()}
+    if not title_key and not normalized_ids:
+        return None
+    return {
+        "title": str(entry.get("title") or "").strip(),
+        "title_key": title_key,
+        "provider_ids": normalized_ids,
+        "library_id": str(entry.get("library_id") or "").strip(),
+        "recorded_at": str(entry.get("recorded_at") or "").strip(),
+    }
+
+
+def _unmonitored_entry_identity(entry: dict[str, Any]) -> tuple[str, str]:
+    provider_ids = entry.get("provider_ids") if isinstance(entry.get("provider_ids"), dict) else {}
+    return (
+        str(entry.get("title_key") or "").strip(),
+        "|".join(f"{provider}:{value}" for provider, value in sorted(provider_ids.items())),
+    )
+
+
+def _apply_unmonitored_title_guard(database: dict[str, Any], anime: dict[str, Any]) -> bool:
+    if not _title_is_unmonitored(database, anime):
+        return False
+    anime["monitored"] = False
+    _clear_download_plan_for_unmonitored(anime)
+    _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+    return True
+
+
 def _store_root_folder_candidate(database: dict[str, Any], candidate: dict[str, Any], summary: dict[str, int]) -> dict[str, Any]:
     existing = next((item for item in database["anime"] if item["library_id"] == candidate["library_id"]), None)
     merge_target = _find_existing_root_import_target(database["anime"], candidate)
@@ -4179,11 +4377,13 @@ def _store_root_folder_candidate(database: dict[str, Any], candidate: dict[str, 
     if duplicate_title is not None:
         _resolve_duplicate_title_conflict(candidate, duplicate_title)
     if existing is None:
+        _apply_unmonitored_title_guard(database, candidate)
         database["anime"].append(candidate)
         stored_item = candidate
         summary["imported"] += 1
     else:
         _update_imported_anime(existing, candidate)
+        _apply_unmonitored_title_guard(database, existing)
         stored_item = existing
         summary["updated"] += 1
 
@@ -5893,6 +6093,8 @@ def _read_user_database() -> dict[str, Any]:
         database["settings"]["timezone"] = _settings_timezone_value(database["settings"].get("timezone"))
         if not isinstance(database.get("ignored_torrents"), list):
             database["ignored_torrents"] = []
+        if not isinstance(database.get("unmonitored_titles"), list):
+            database["unmonitored_titles"] = []
         if not isinstance(database.get("events"), list):
             database["events"] = []
         changed = _merge_same_path_root_folder_duplicates(database.get("anime", []))
@@ -5988,6 +6190,7 @@ def _nfo_text(root: ET.Element, tag: str, value: Any) -> None:
 
 def _prune_user_database(database: dict[str, Any]) -> bool:
     changed = _prune_ignored_torrents(database)
+    changed = _prune_unmonitored_titles(database) or changed
     library = database.get("anime") if isinstance(database.get("anime"), list) else []
     for anime in library:
         if isinstance(anime, dict):
@@ -6001,26 +6204,66 @@ def _prune_ignored_torrents(database: dict[str, Any]) -> bool:
         return False
     compact = [item for item in ignored if isinstance(item, dict) and str(item.get("key") or "").strip()]
     compact.sort(key=lambda item: str(item.get("ignored_at") or ""), reverse=True)
-    if MAX_IGNORED_TORRENTS > 0:
+    archived: list[dict[str, Any]] = []
+    if MAX_IGNORED_TORRENTS > 0 and len(compact) > MAX_IGNORED_TORRENTS:
+        archived = compact[MAX_IGNORED_TORRENTS:]
         compact = compact[:MAX_IGNORED_TORRENTS]
     compact.sort(key=lambda item: str(item.get("ignored_at") or ""))
+    for item in archived:
+        _append_cold_storage_event(IGNORED_TORRENTS_COLD_STORAGE_PATH, "ignore", item)
     if compact == ignored:
-        return False
+        return bool(archived)
     database["ignored_torrents"] = compact
     return True
+
+def _prune_unmonitored_titles(database: dict[str, Any]) -> bool:
+    entries = database.get("unmonitored_titles")
+    if not isinstance(entries, list):
+        database["unmonitored_titles"] = []
+        return True
+    compact: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in sorted(entries, key=lambda item: str(item.get("recorded_at") or "") if isinstance(item, dict) else "", reverse=True):
+        if not isinstance(entry, dict):
+            continue
+        normalized = _normalized_unmonitored_title_entry(entry)
+        if normalized is None:
+            continue
+        identity = _unmonitored_entry_identity(normalized)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        compact.append(normalized)
+    archived: list[dict[str, Any]] = []
+    if MAX_UNMONITORED_TITLE_ENTRIES > 0 and len(compact) > MAX_UNMONITORED_TITLE_ENTRIES:
+        archived = compact[MAX_UNMONITORED_TITLE_ENTRIES:]
+        compact = compact[:MAX_UNMONITORED_TITLE_ENTRIES]
+    compact.sort(key=lambda item: str(item.get("recorded_at") or ""))
+    if archived:
+        _archive_unmonitored_title_entries(archived)
+    if compact == entries:
+        return bool(archived)
+    database["unmonitored_titles"] = compact
+    return True
+
 
 
 def _prune_anime_retained_state(anime: dict[str, Any]) -> bool:
     changed = False
     candidates = anime.get("metadata_candidates")
     if isinstance(candidates, list) and MAX_METADATA_CANDIDATES_PER_ANIME > 0 and len(candidates) > MAX_METADATA_CANDIDATES_PER_ANIME:
+        archived_candidates = candidates[MAX_METADATA_CANDIDATES_PER_ANIME:]
         anime["metadata_candidates"] = candidates[:MAX_METADATA_CANDIDATES_PER_ANIME]
+        _archive_metadata_candidates(anime, archived_candidates)
         changed = True
 
     queues = _download_queue_items(anime)
     if queues:
-        compact_queues = [_compact_download_queue(queue) for queue in queues if isinstance(queue, dict)]
+        compact_queues = [_compact_download_queue(anime, queue) for queue in queues if isinstance(queue, dict)]
         retained_queues = _retained_download_queues(compact_queues)
+        if retained_queues != compact_queues:
+            retained_ids = {id(queue) for queue in retained_queues}
+            _archive_download_queues(anime, [queue for queue in compact_queues if id(queue) not in retained_ids])
         if retained_queues != queues:
             anime["download_queues"] = retained_queues
             _sync_primary_download_queue(anime, retained_queues)
@@ -6028,15 +6271,53 @@ def _prune_anime_retained_state(anime: dict[str, Any]) -> bool:
     return changed
 
 
-def _compact_download_queue(queue: dict[str, Any]) -> dict[str, Any]:
+def _compact_download_queue(anime: dict[str, Any], queue: dict[str, Any]) -> dict[str, Any]:
     compact = dict(queue)
-    if isinstance(compact.get("flagged_files"), list):
-        compact["flagged_files"] = _limited_list(compact.get("flagged_files"), MAX_FLAGGED_FILES_PER_QUEUE)
-    if isinstance(compact.get("selected_episode_files"), list):
-        compact["selected_episode_files"] = _limited_list(compact.get("selected_episode_files"), MAX_SELECTED_FILES_PER_QUEUE)
-    if isinstance(compact.get("rejected_import_files"), list):
-        compact["rejected_import_files"] = _limited_list(compact.get("rejected_import_files"), MAX_SELECTED_FILES_PER_QUEUE)
+    _archive_queue_field_overflow(anime, compact, "flagged_files", MAX_FLAGGED_FILES_PER_QUEUE)
+    _archive_queue_field_overflow(anime, compact, "selected_episode_files", MAX_SELECTED_FILES_PER_QUEUE)
+    _archive_queue_field_overflow(anime, compact, "rejected_import_files", MAX_SELECTED_FILES_PER_QUEUE)
     return compact
+
+
+def _archive_queue_field_overflow(anime: dict[str, Any], queue: dict[str, Any], field: str, limit: int) -> None:
+    values = queue.get(field)
+    if not isinstance(values, list) or limit <= 0 or len(values) <= limit:
+        return
+    archived = values[limit:]
+    queue[field] = values[:limit]
+    _append_cold_storage_event(
+        DOWNLOAD_QUEUES_COLD_STORAGE_PATH,
+        "queue_field_overflow",
+        _cold_queue_payload(anime, queue) | {"field": field, "archived_values": archived},
+    )
+
+
+def _archive_download_queues(anime: dict[str, Any], queues: list[dict[str, Any]]) -> None:
+    for queue in queues:
+        _append_cold_storage_event(DOWNLOAD_QUEUES_COLD_STORAGE_PATH, "queue_history", _cold_queue_payload(anime, queue))
+
+
+def _cold_queue_payload(anime: dict[str, Any], queue: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "anime_library_id": str(anime.get("library_id") or ""),
+        "anime_title": str(anime.get("title") or anime.get("original_title") or ""),
+        "queue_identity": _queue_identity(queue),
+        "queue": queue,
+    }
+
+
+def _archive_metadata_candidates(anime: dict[str, Any], candidates: list[Any]) -> None:
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            _append_cold_storage_event(
+                METADATA_CANDIDATES_COLD_STORAGE_PATH,
+                "metadata_candidate",
+                {
+                    "anime_library_id": str(anime.get("library_id") or ""),
+                    "anime_title": str(anime.get("title") or anime.get("original_title") or ""),
+                    "candidate": candidate,
+                },
+            )
 
 
 def _retained_download_queues(queues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -6074,8 +6355,12 @@ def _prune_resolved_metadata_cache(cache: dict[str, Any]) -> bool:
         return False
     if len(resolved) <= MAX_RESOLVED_METADATA_CACHE_ENTRIES:
         return False
-    items = list(resolved.items())[-MAX_RESOLVED_METADATA_CACHE_ENTRIES:]
-    cache["resolved"] = dict(items)
+    items = list(resolved.items())
+    archived = items[:-MAX_RESOLVED_METADATA_CACHE_ENTRIES]
+    kept = items[-MAX_RESOLVED_METADATA_CACHE_ENTRIES:]
+    for key, value in archived:
+        _append_cold_storage_event(RESOLVED_METADATA_COLD_STORAGE_PATH, "resolved_metadata_cache", {"key": key, "value": value})
+    cache["resolved"] = dict(kept)
     return True
 
 
@@ -6116,6 +6401,7 @@ def _empty_user_database() -> dict[str, Any]:
         },
         "anime": [],
         "ignored_torrents": [],
+        "unmonitored_titles": [],
         "events": [],
     }
 
