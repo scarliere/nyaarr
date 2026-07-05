@@ -75,6 +75,8 @@ The rating badge displays a heart marker next to the numeric rating so the score
 Season identity is posted with the selected anime. Provider results infer `season_number` from title metadata such as `Season 2`, `S2`, `II`, or similar markers; entries without an explicit marker default to season 1.
 If a posted season value is missing or invalid, the add route falls back to season 1.
 
+Provider IDs are posted with the selected result. When AniList resolves the result, `/anime` stores the AniList ID directly on the library item so routine reconciliation does not need to rediscover the same identity later.
+
 Each added anime stores the selected quality preference:
 
 - `1080p`: search up to 1080p, then fall back to lower stated resolutions or unstated-resolution releases.

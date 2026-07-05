@@ -101,6 +101,7 @@
                     <input type="hidden" name="next_airing_at" value="{{ anime.next_airing_at }}">
                     <input type="hidden" name="airing_episode" value="{{ anime.airing_episode }}">
                     <input type="hidden" name="airing_source" value="{{ anime.airing_source }}">
+                    <input type="hidden" name="provider_ids" value='{{ anime.provider_ids|tojson }}'>
                     <label class="quality-select">
                       <span>Preferred quality</span>
                       <select name="quality_resolution">

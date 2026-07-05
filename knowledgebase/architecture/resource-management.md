@@ -12,6 +12,7 @@ Nyaarr now includes guardrails for the highest-risk local resource flows: duplic
   - metadata candidates, oversized flagged-file lists, selected batch file lists, rejected import file lists, and resolved metadata cache evictions are archived instead of silently discarded.
 - `nyaarr/torrent_finder.py` clamps RSS workers to 16, caps cached RSS query entries, evicts expired cache rows, and caps episode-specific RSS fan-out for large backlogs. These remain true runtime cache/fan-out controls; cold storage would not improve correctness here.
 - Root-folder background scans now import each top-level candidate as it is found instead of first retaining a full candidate list for the entire scan.
+- Root-folder scan completion rereads the latest database and merges scanned anime into it, so settings saved during a long scan, including qBittorrent settings, are not overwritten by the scan job.
 - User database writes now skip replacing the JSON file when the serialized content is unchanged.
 
 ## Cold Storage

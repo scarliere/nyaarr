@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import json
 import hmac
 from io import StringIO
 
@@ -578,6 +579,7 @@ def create_app() -> Flask:
             "next_airing_at": request.form.get("next_airing_at", ""),
             "airing_episode": request.form.get("airing_episode", ""),
             "airing_source": request.form.get("airing_source", ""),
+            "provider_ids": _posted_provider_ids(request.form.get("provider_ids", "")),
             "quality_resolution": _posted_quality_resolution(request.form.get("quality_resolution")),
         }
         torrent_search = {
@@ -752,6 +754,16 @@ def _posted_quality_resolution(value: str | None) -> str:
     if selected == "720p":
         return "720p"
     return "1080p"
+
+
+def _posted_provider_ids(value: str | None) -> dict[str, str]:
+    try:
+        raw = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(provider): str(identifier).strip() for provider, identifier in raw.items() if str(identifier or "").strip()}
 
 
 def _anilist_summary_from_query() -> dict[str, str] | None:

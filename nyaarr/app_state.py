@@ -1189,6 +1189,22 @@ def _root_scan_thread_active() -> bool:
     return _ROOT_SCAN_THREAD is not None and _ROOT_SCAN_THREAD.is_alive()
 
 
+def _merge_scanned_anime_into_latest(
+    latest_library: list[dict[str, Any]],
+    scanned_library: list[dict[str, Any]],
+    scan_start_ids: set[str],
+) -> list[dict[str, Any]]:
+    scanned_by_id = {str(anime.get("library_id") or ""): anime for anime in scanned_library if isinstance(anime, dict)}
+    removed_scan_ids = scan_start_ids - set(scanned_by_id)
+    merged = [
+        scanned_by_id.pop(str(anime.get("library_id") or ""), anime)
+        for anime in latest_library
+        if isinstance(anime, dict) and str(anime.get("library_id") or "") not in removed_scan_ids
+    ]
+    merged.extend(scanned_by_id.values())
+    return merged
+
+
 def _start_root_folder_scan_thread(root_folder: Path) -> None:
     global _ROOT_SCAN_THREAD
     _ROOT_SCAN_THREAD = threading.Thread(target=_run_root_folder_scan_job, args=(root_folder,), name="nyaarr-root-folder-scan", daemon=True)
@@ -1199,10 +1215,15 @@ def _run_root_folder_scan_job(root_folder: Path) -> None:
     try:
         _update_root_scan_progress(phase="Reading folders", current=0, total=0, message=f"Reading top-level items from {root_folder}")
         children = _root_folder_children(root_folder)
+        scan_database = _read_user_database()
+        scan_start_ids = {str(anime.get("library_id") or "") for anime in scan_database.get("anime", []) if isinstance(anime, dict)}
+        _seed_resolved_metadata_cache_from_library(scan_database["anime"])
+        scan_summary = _import_root_folder_children(scan_database, root_folder, children)
         database = _read_user_database()
+        database["anime"] = _merge_scanned_anime_into_latest(database.get("anime", []), scan_database.get("anime", []), scan_start_ids)
+        database["ignored_torrents"] = scan_database.get("ignored_torrents", database.get("ignored_torrents", []))
+        database["unmonitored_titles"] = scan_database.get("unmonitored_titles", database.get("unmonitored_titles", []))
         database["settings"]["root_folder"] = str(root_folder)
-        _seed_resolved_metadata_cache_from_library(database["anime"])
-        scan_summary = _import_root_folder_children(database, root_folder, children)
         message = f"Root folder scan complete: {root_folder}"
         _record_event(database, "settings", f"{message} Imported={scan_summary['imported']}, updated={scan_summary['updated']}, skipped={scan_summary['skipped']}.")
         _write_user_database(database)

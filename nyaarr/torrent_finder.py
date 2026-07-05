@@ -310,6 +310,7 @@ def _fetch_nyaa_rss(query: str) -> list[dict[str, Any]]:
                 "trusted": _child_text(item, f"{NYAA_NAMESPACE}trusted"),
                 "remake": _child_text(item, f"{NYAA_NAMESPACE}remake"),
                 "release_group": _release_group(title),
+                "release_group_source": _release_group_source(title),
                 "release_kind": _release_kind(title),
                 "episode": _episode_number(title),
                 "source_kind": _source_kind(title),
@@ -540,6 +541,7 @@ def _episode_releases_from_consistent_group(
             continue
         ranked_groups.append(
             (
+                max(_release_group_source_rank(release) for release in releases),
                 _group_preference_rank(group, preferred_groups),
                 missing_episodes.issubset(covered) if missing_episodes else True,
                 len(covered_missing),
@@ -552,8 +554,8 @@ def _episode_releases_from_consistent_group(
     if not ranked_groups:
         return []
 
-    ranked_groups.sort(reverse=True, key=lambda item: item[:6])
-    return _sort_episode_releases(ranked_groups[0][6])
+    ranked_groups.sort(reverse=True, key=lambda item: item[:7])
+    return _sort_episode_releases(ranked_groups[0][7])
 
 
 def _same_subber_batch_fallback_releases(
@@ -680,14 +682,25 @@ def _float_value(value: Any) -> float | None:
 
 
 def _preferred_group(releases: list[dict[str, Any]], preferred_groups: list[str] | None = None) -> str:
-    groups = [release["release_group"] for release in releases if release.get("release_group")]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for release in releases:
+        group = str(release.get("release_group") or "").strip()
+        if group:
+            groups.setdefault(group, []).append(release)
     if not groups:
         return "Unknown"
-    for preferred_group in preferred_groups or []:
-        if any(group.casefold() == preferred_group.casefold() for group in groups):
-            return preferred_group
-    counts = Counter(groups)
-    return counts.most_common(1)[0][0]
+    ranked_groups = [
+        (
+            max(_release_group_source_rank(release) for release in group_releases),
+            _group_preference_rank(group, preferred_groups),
+            len(group_releases),
+            sum(int(release.get("seeders") or 0) for release in group_releases),
+            group,
+        )
+        for group, group_releases in groups.items()
+    ]
+    ranked_groups.sort(reverse=True, key=lambda item: item[:5])
+    return ranked_groups[0][4]
 
 
 def _group_preference_rank(group: str, preferred_groups: list[str] | None = None) -> int:
@@ -737,6 +750,7 @@ def _sort_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         releases,
         key=lambda release: (
+            _release_group_source_rank(release),
             release.get("seeders", 0),
             release.get("downloads", 0),
             -(release.get("size_bytes") or 0),
@@ -750,8 +764,9 @@ def _sort_episode_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any
         releases,
         key=lambda release: (
             release.get("episode") or 0,
-            release.get("seeders", 0),
-            release.get("downloads", 0),
+            -_release_group_source_rank(release),
+            -int(release.get("seeders") or 0),
+            -int(release.get("downloads") or 0),
         ),
     )
 
@@ -764,9 +779,11 @@ def _best_release_per_episode(releases: list[dict[str, Any]]) -> list[dict[str, 
             continue
         existing = best_by_episode.get(episode)
         if existing is None or (
+            _release_group_source_rank(release),
             int(release.get("seeders") or 0),
             int(release.get("downloads") or 0),
         ) > (
+            _release_group_source_rank(existing),
             int(existing.get("seeders") or 0),
             int(existing.get("downloads") or 0),
         ):
@@ -849,21 +866,46 @@ def _torrent_season_number(title: str) -> int | None:
 
 
 def _release_group(title: str) -> str:
-    match = re.match(r"^\[([^\]]+)\]", title)
-    if match:
-        return match.group(1).strip()
+    prefix = _leading_release_group(title)
+    if prefix:
+        return prefix
+    suffix = _suffix_release_group(title)
+    return suffix or "Unknown"
 
+
+def _release_group_source(title: str) -> str:
+    if _leading_release_group(title):
+        return "prefix"
+    if _suffix_release_group(title):
+        return "suffix"
+    return "unknown"
+
+
+def _leading_release_group(title: str) -> str:
+    match = re.match(r"^\[([^\]]+)\]", title)
+    return match.group(1).strip() if match else ""
+
+
+def _suffix_release_group(title: str) -> str:
     normalized = _release_title_without_suffix_notes(title)
     scene_match = re.search(
         r"(?:x26[45]|h\.?\s*26[45]|hevc|av1|web[-\s]?dl|webrip|bdrip|hdtv)[^-]{0,100}-([A-Za-z0-9][A-Za-z0-9._+]{1,31})$",
         normalized,
         flags=re.IGNORECASE,
     )
-    if scene_match:
-        group = scene_match.group(1).strip(" ._-")
-        if group and group.casefold() not in {"dl", "rip", "sub", "subs", "multi", "dual", "audio"}:
-            return group
-    return "Unknown"
+    if not scene_match:
+        return ""
+    group = scene_match.group(1).strip(" ._-")
+    if group and group.casefold() not in {"dl", "rip", "sub", "subs", "multi", "dual", "audio"}:
+        return group
+    return ""
+
+
+def _release_group_source_rank(release: dict[str, Any]) -> int:
+    source = str(release.get("release_group_source") or "").strip().casefold()
+    if not source:
+        source = _release_group_source(str(release.get("title") or ""))
+    return {"prefix": 2, "suffix": 1}.get(source, 0)
 
 
 def _release_title_without_suffix_notes(title: str) -> str:

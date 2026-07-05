@@ -75,6 +75,8 @@ def test_add_search_endpoint_runs_metadata_search_and_returns_partial(monkeypatc
     assert payload["total_results"] == 1
     assert "Async Anime" in payload["html"]
     assert "add-anime-action" in payload["html"]
+    assert 'name="provider_ids"' in payload["html"]
+    assert "anilist" in payload["html"]
 
 
 def test_add_anime_json_redirects_to_anime_list(monkeypatch) -> None:
@@ -107,6 +109,7 @@ def test_add_anime_json_redirects_to_anime_list(monkeypatch) -> None:
             "next_airing_at": result["next_airing_at"],
             "airing_episode": result["airing_episode"],
             "airing_source": result["airing_source"],
+            "provider_ids": '{"anilist":"123"}',
             "quality_resolution": "1080p",
             "nyaa_link": "",
         },
@@ -118,6 +121,7 @@ def test_add_anime_json_redirects_to_anime_list(monkeypatch) -> None:
     assert payload["ok"] is True
     assert payload["redirect_url"] == "/anime/list"
     assert added and added[0][0]["title"] == "Async Anime"
+    assert added[0][0]["provider_ids"] == {"anilist": "123"}
 
 def test_activity_pages_render_before_activity_model(monkeypatch) -> None:
     calls = []

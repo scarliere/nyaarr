@@ -3190,6 +3190,36 @@ def test_save_root_folder_queues_background_scan_without_inline_import(monkeypat
     assert app_state.root_folder_scan_progress()["active"] is True
 
 
+
+
+def test_root_scan_completion_preserves_download_client_saved_during_scan(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Anime"
+    root.mkdir()
+    scan_database = {"settings": {"root_folder": str(root), "download_client": {"implementation": ""}}, "anime": [], "events": []}
+    latest_database = {
+        "settings": {
+            "root_folder": str(root),
+            "download_client": {"implementation": "qbittorrent", "enabled": True, "host": "127.0.0.1"},
+        },
+        "anime": [{"library_id": "manual:add", "title": "Added During Scan"}],
+        "events": [],
+    }
+    reads = iter([scan_database, latest_database])
+    writes = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: next(reads))
+    monkeypatch.setattr(app_state, "_root_folder_children", lambda path: [])
+    monkeypatch.setattr(app_state, "_seed_resolved_metadata_cache_from_library", lambda library: None)
+    monkeypatch.setattr(app_state, "_import_root_folder_children", lambda database, path, children: app_state._empty_scan_summary())
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+
+    app_state._run_root_folder_scan_job(root)
+
+    assert writes
+    assert writes[0]["settings"]["download_client"]["implementation"] == "qbittorrent"
+    assert writes[0]["settings"]["download_client"]["host"] == "127.0.0.1"
+    assert any(anime.get("library_id") == "manual:add" for anime in writes[0]["anime"])
+
 def test_root_folder_candidate_scan_reports_top_level_progress(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
     anime_folder = root / "Petals"

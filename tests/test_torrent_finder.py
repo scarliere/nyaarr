@@ -367,7 +367,10 @@ def test_episode_selection_keeps_suffix_subber_consistent() -> None:
         item["title"] = title
         item["release_group"] = torrent_finder._release_group(title)
         releases.append(item)
-    beta = release("Other", 1, seeders=100)
+    beta_title = "Petals of Reincarnation S01E01 1080p WEB-DL AAC2.0 x265-Other.mkv"
+    beta = release("Unknown", 1, seeders=100)
+    beta["title"] = beta_title
+    beta["release_group"] = torrent_finder._release_group(beta_title)
     releases.append(beta)
 
     candidates = torrent_finder._select_candidates(releases, anime(progress_target=3))
@@ -551,6 +554,42 @@ def test_find_torrents_tries_preferred_subber_query_before_generic(monkeypatch: 
     assert calls[0] == "SubsPlease Petals of Reincarnation"
     assert result["candidates"][0]["release_group"] == "SubsPlease"
 
+
+
+
+def test_episode_selection_prefers_prefix_subber_over_suffix_subber() -> None:
+    prefix = release("SubsPlease", 1, seeders=5)
+    suffix = release("SubsPlease", 1, seeders=500)
+    suffix["title"] = "Petals of Reincarnation S01E01 1080p WEB-DL AAC2.0 x265-SubsPlease.mkv"
+
+    candidates = torrent_finder._select_candidates([suffix, prefix], anime(progress_target=1), ["SubsPlease"])
+
+    assert candidates[0]["title"].startswith("[SubsPlease]")
+
+
+
+def test_episode_selection_prefers_any_prefix_group_over_suffix_group() -> None:
+    prefix = release("BracketSubs", 1, seeders=5)
+    suffix = release("SuffixSubs", 1, seeders=500)
+    suffix["title"] = "Petals of Reincarnation S01E01 1080p WEB-DL AAC2.0 x265-SuffixSubs.mkv"
+    suffix["release_group"] = torrent_finder._release_group(suffix["title"])
+
+    candidates = torrent_finder._select_candidates([suffix, prefix], anime(progress_target=1), ["SuffixSubs"])
+
+    assert candidates[0]["release_group"] == "BracketSubs"
+    assert candidates[0]["title"].startswith("[BracketSubs]")
+
+
+def test_batch_selection_prefers_prefix_group_over_suffix_group() -> None:
+    prefix = batch_release("BracketSubs", seeders=5)
+    suffix = batch_release("SuffixSubs", seeders=500)
+    suffix["title"] = "Petals of Reincarnation Complete 1080p WEB-DL AAC2.0 x265-SuffixSubs.mkv"
+    suffix["release_group"] = torrent_finder._release_group(suffix["title"])
+
+    candidates = torrent_finder._select_candidates([suffix, prefix], anime(progress_target=12), ["SuffixSubs"])
+
+    assert candidates[0]["release_group"] == "BracketSubs"
+    assert candidates[0]["title"].startswith("[BracketSubs]")
 
 def test_episode_selection_prefers_configured_subber_without_local_history() -> None:
     releases = [release("HighSeeds", 1, seeders=500), release("SubsPlease", 1, seeders=5)]
