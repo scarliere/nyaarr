@@ -61,7 +61,7 @@ Selection strategy:
 3. Score usable candidates with a confidence value from 0 to 100.
 4. Add confidence for matching quality, matching a missing episode, batch suitability for an empty local library, healthy seed counts, known release group, matching the release group already used by local episode files, and prioritized subber matches.
 5. Subtract confidence when the candidate has no reported seeders or no detected group. Preferred subbers are a boost and search-order preference, not a hard rejection of viable alternatives.
-6. Sort candidates by confidence and then seeders.
+6. Sort final candidates by release-group source, preferred-subber membership, confidence, and then seeders.
 7. Automatically push the best candidate to qBittorrent only when it meets `settings.torrent_confidence_threshold`, currently defaulting to `70`.
 8. If no usable candidate exists or the best candidate is below threshold, set `torrent_manual_selection.required` on the anime instead of dispatching it. A search that returns no usable candidates is treated as manual intervention, not as a completed empty state.
 
@@ -142,4 +142,4 @@ Episode-specific searches still use one RSS query per planned missing episode wh
 
 ## Release Group Priority
 
-Bracket-prefix release groups are preferred before scene-style suffix groups globally. For example, `[SubsPlease] Title - 01 [1080p]` ranks ahead of `Title S01E01 1080p WEB-DL x265-SomeGroup.mkv`, even when the suffix release has more seeders or matches a configured preferred subber. Nyaarr still preserves the raw torrent title and stores the parsed `release_group`; RSS-ingested releases also carry `release_group_source` as `prefix`, `suffix`, or `unknown`.
+Bracket-prefix release groups are preferred before scene-style suffix groups globally. For example, `[SubsPlease] Title - 01 [1080p]` ranks ahead of `Title S01E01 1080p WEB-DL x265-SomeGroup.mkv`, even when the suffix release has more seeders or matches a configured preferred subber. When multiple releases have the same prefix/suffix class, configured preferred subbers such as `Judas` are preferred before confidence and seed counts. Nyaarr still preserves the raw torrent title and stores the parsed `release_group`; RSS-ingested releases also carry `release_group_source` as `prefix`, `suffix`, or `unknown`.

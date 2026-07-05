@@ -2505,6 +2505,87 @@ def test_completed_torrent_import_skips_sample_file(monkeypatch, tmp_path) -> No
 
 
 
+
+
+def test_dispatch_sets_release_group_lock_from_first_queued_release(monkeypatch) -> None:
+    candidate = auto_candidate(1, "Judas")
+    database = auto_dispatch_database([candidate])
+    anime = database["anime"][0]
+    anime["completion"] = {"expected_episodes": 1, "local_episodes": 0, "progress_target": 1, "missing_episodes": 1}
+    client = FakeDownloadClient()
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+
+    app_state._maybe_dispatch_torrent(database, anime)
+
+    assert client.urls == [candidate["torrent_url"]]
+    assert anime["release_group_lock"]["release_group"] == "Judas"
+    assert anime["release_group_lock"]["source"] == "queued"
+
+def test_dispatch_selection_uses_release_group_lock_before_prefix_source() -> None:
+    database = manual_database()
+    anime = database["anime"][0]
+    anime["title"] = "Daemons of the Shadow Realm"
+    anime["completion"] = {"expected_episodes": 12, "local_episodes": 0, "progress_target": 1, "missing_episodes": 1}
+    anime["release_group_lock"] = {"release_group": "Judas", "source": "queued", "locked_at": "2026-07-05T00:00:00+00:00"}
+    judas = manual_candidate("judas-1")
+    judas.update(
+        {
+            "title": "Daemons of the Shadow Realm S01E01 1080p WEB-DL AAC2.0 x265-Judas.mkv",
+            "release_group": "Judas",
+            "release_group_source": "suffix",
+            "seeders": 5,
+            "episode": 1,
+        }
+    )
+    toonshub = manual_candidate("toonshub-1")
+    toonshub.update(
+        {
+            "title": "[ToonsHub] Daemons of the Shadow Realm - 01 [1080p]",
+            "release_group": "ToonsHub",
+            "release_group_source": "prefix",
+            "seeders": 500,
+            "episode": 1,
+        }
+    )
+
+    selected = app_state._selected_download_releases([toonshub, judas], database, anime)
+
+    assert selected
+    assert selected[0]["release_group"] == "Judas"
+
+def test_dispatch_selection_prefers_configured_prefix_subber_over_other_prefix_group() -> None:
+    database = manual_database()
+    database["settings"]["preferred_subbers"] = ["Judas"]
+    anime = database["anime"][0]
+    anime["title"] = "Daemons of the Shadow Realm"
+    anime["original_title"] = "Yomi no Tsugai"
+    anime["completion"] = {"expected_episodes": 12, "local_episodes": 0, "progress_target": 1, "missing_episodes": 1}
+    judas = manual_candidate("judas-1")
+    judas.update(
+        {
+            "title": "[Judas] Daemons of the Shadow Realm - 01 [1080p]",
+            "release_group": "Judas",
+            "release_group_source": "prefix",
+            "seeders": 5,
+            "episode": 1,
+        }
+    )
+    toonshub = manual_candidate("toonshub-1")
+    toonshub.update(
+        {
+            "title": "[ToonsHub] Daemons of the Shadow Realm - 01 [1080p]",
+            "release_group": "ToonsHub",
+            "release_group_source": "prefix",
+            "seeders": 500,
+            "episode": 1,
+        }
+    )
+
+    selected = app_state._selected_download_releases([toonshub, judas], database, anime)
+
+    assert selected
+    assert selected[0]["release_group"] == "Judas"
+
 def test_no_candidate_refresh_with_usable_candidates_clears_manual_and_dispatches(monkeypatch) -> None:
     monkeypatch.setattr(app_state, "TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS", 60)
     database = manual_database()

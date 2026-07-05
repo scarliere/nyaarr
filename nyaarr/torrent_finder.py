@@ -541,8 +541,8 @@ def _episode_releases_from_consistent_group(
             continue
         ranked_groups.append(
             (
-                max(_release_group_source_rank(release) for release in releases),
                 _group_preference_rank(group, preferred_groups),
+                max(_release_group_source_rank(release) for release in releases),
                 missing_episodes.issubset(covered) if missing_episodes else True,
                 len(covered_missing),
                 len(covered),
@@ -691,8 +691,8 @@ def _preferred_group(releases: list[dict[str, Any]], preferred_groups: list[str]
         return "Unknown"
     ranked_groups = [
         (
-            max(_release_group_source_rank(release) for release in group_releases),
             _group_preference_rank(group, preferred_groups),
+            max(_release_group_source_rank(release) for release in group_releases),
             len(group_releases),
             sum(int(release.get("seeders") or 0) for release in group_releases),
             group,
@@ -709,6 +709,14 @@ def _group_preference_rank(group: str, preferred_groups: list[str] | None = None
             return 1000 - index
     return 0
 
+def _locked_release_group(anime: dict[str, Any]) -> str:
+    lock = anime.get("release_group_lock")
+    if isinstance(lock, dict):
+        group = str(lock.get("release_group") or "").strip()
+    else:
+        group = str(anime.get("locked_release_group") or anime.get("preferred_release_group") or "").strip()
+    return "" if group in {"Unknown", "Manual"} else group
+
 def _local_release_group_preference(anime: dict[str, Any]) -> str:
     groups = []
     episode_files = anime.get("episode_files")
@@ -719,6 +727,10 @@ def _local_release_group_preference(anime: dict[str, Any]) -> str:
                 groups.append(group)
     if groups:
         return Counter(groups).most_common(1)[0][0]
+
+    locked_group = _locked_release_group(anime)
+    if locked_group:
+        return locked_group
 
     queues = anime.get("download_queues")
     if not isinstance(queues, list):

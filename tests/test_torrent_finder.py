@@ -568,7 +568,7 @@ def test_episode_selection_prefers_prefix_subber_over_suffix_subber() -> None:
 
 
 
-def test_episode_selection_prefers_any_prefix_group_over_suffix_group() -> None:
+def test_episode_selection_prefers_configured_suffix_group_over_arbitrary_prefix_group() -> None:
     prefix = release("BracketSubs", 1, seeders=5)
     suffix = release("SuffixSubs", 1, seeders=500)
     suffix["title"] = "Petals of Reincarnation S01E01 1080p WEB-DL AAC2.0 x265-SuffixSubs.mkv"
@@ -576,11 +576,10 @@ def test_episode_selection_prefers_any_prefix_group_over_suffix_group() -> None:
 
     candidates = torrent_finder._select_candidates([suffix, prefix], anime(progress_target=1), ["SuffixSubs"])
 
-    assert candidates[0]["release_group"] == "BracketSubs"
-    assert candidates[0]["title"].startswith("[BracketSubs]")
+    assert candidates[0]["release_group"] == "SuffixSubs"
 
 
-def test_batch_selection_prefers_prefix_group_over_suffix_group() -> None:
+def test_batch_selection_prefers_configured_suffix_group_over_arbitrary_prefix_group() -> None:
     prefix = batch_release("BracketSubs", seeders=5)
     suffix = batch_release("SuffixSubs", seeders=500)
     suffix["title"] = "Petals of Reincarnation Complete 1080p WEB-DL AAC2.0 x265-SuffixSubs.mkv"
@@ -588,8 +587,19 @@ def test_batch_selection_prefers_prefix_group_over_suffix_group() -> None:
 
     candidates = torrent_finder._select_candidates([suffix, prefix], anime(progress_target=12), ["SuffixSubs"])
 
-    assert candidates[0]["release_group"] == "BracketSubs"
-    assert candidates[0]["title"].startswith("[BracketSubs]")
+    assert candidates[0]["release_group"] == "SuffixSubs"
+
+def test_episode_selection_prefers_locked_suffix_group_over_arbitrary_prefix_group() -> None:
+    prefix = release("BracketSubs", 1, seeders=500)
+    suffix = release("LockedSubs", 1, seeders=5)
+    suffix["title"] = "Petals of Reincarnation S01E01 1080p WEB-DL AAC2.0 x265-LockedSubs.mkv"
+    suffix["release_group"] = torrent_finder._release_group(suffix["title"])
+    item = anime(progress_target=1)
+    item["release_group_lock"] = {"release_group": "LockedSubs", "source": "queued", "locked_at": "2026-07-05T00:00:00+00:00"}
+
+    candidates = torrent_finder._select_candidates([prefix, suffix], item)
+
+    assert candidates[0]["release_group"] == "LockedSubs"
 
 def test_episode_selection_prefers_configured_subber_without_local_history() -> None:
     releases = [release("HighSeeds", 1, seeders=500), release("SubsPlease", 1, seeders=5)]

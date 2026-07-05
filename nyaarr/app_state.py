@@ -1973,7 +1973,7 @@ def _visible_manual_candidates(
         scored_candidate["confidence_reasons"] = reasons
         rows.append(scored_candidate)
 
-    return sorted(rows, key=lambda item: (int(item.get("confidence") or 0), int(item.get("seeders") or 0)), reverse=True)
+    return sorted(rows, key=lambda item: _candidate_selection_sort_key(item, database, anime), reverse=True)
 
 
 def _clear_stale_manual_candidates(anime: dict[str, Any]) -> None:
@@ -2503,6 +2503,7 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
                     release["infohash"] = discovered_hash
                     known_client_hashes.add(discovered_hash)
             queue = _download_queue_from_release(release, anime, client_settings, dispatch_save_path, missing_episodes)
+            _set_release_group_lock_from_release(anime, release, 'queued')
             queues.append(queue)
             if release_key:
                 existing_keys.add(release_key)
@@ -2764,6 +2765,7 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
                 continue
             if safety_result == "safe" and queue.get("user_add_paused"):
                 queue["message"] = "Torrent passed safety inspection and remains paused by setting."
+            _set_release_group_lock_from_release(anime, queue, 'torrent_files')
 
         progress = float(torrent.get("progress") or 0)
         client_state = str(torrent.get("state") or "")
@@ -2946,7 +2948,7 @@ def _queue_release_group(queue: dict[str, Any]) -> str:
 
 
 def _queue_uses_wrong_release_group(anime: dict[str, Any], queue: dict[str, Any]) -> bool:
-    local_group = _local_release_group_preference(anime)
+    local_group = _local_release_group_preference(anime) or _locked_release_group(anime)
     queue_group = _queue_release_group(queue)
     if _queue_is_manual_supplied_batch(queue) or queue_group in {"Manual", "Unknown"}:
         return False
@@ -2973,7 +2975,7 @@ def _delete_wrong_release_group_queue(
     queue: dict[str, Any],
     torrent_hash: str,
 ) -> None:
-    local_group = _local_release_group_preference(anime)
+    local_group = _local_release_group_preference(anime) or _locked_release_group(anime)
     queue_group = _queue_release_group(queue)
     try:
         if torrent_hash:
@@ -2987,7 +2989,7 @@ def _delete_wrong_release_group_queue(
 
     queue["status"] = "rejected"
     queue["rejected_at"] = datetime.now(timezone.utc).isoformat()
-    queue["message"] = f"Rejected {queue_group} release because existing episodes use {local_group}. Searching for a matching subber."
+    queue["message"] = f"Rejected {queue_group} release because this anime is locked to {local_group}. Searching for a matching subber."
     removed_files = _remove_wrong_release_group_imported_files(anime, queue)
     if removed_files:
         queue["removed_episode_files"] = removed_files
@@ -3379,7 +3381,7 @@ def _selected_download_releases(
     if not scored:
         _set_no_usable_torrent_candidates(anime)
         return []
-    scored.sort(key=lambda item: (int(item.get("confidence") or 0), int(item.get("seeders") or 0)), reverse=True)
+    scored.sort(key=lambda item: _candidate_selection_sort_key(item, database or {}, anime), reverse=True)
     best = scored[0]
     threshold = _torrent_confidence_threshold(database or {})
     if int(best.get("confidence") or 0) < threshold:
@@ -3407,9 +3409,59 @@ def _selected_download_releases(
         if episode is None:
             continue
         existing = best_by_episode.get(episode)
-        if existing is None or (int(release.get("confidence") or 0), int(release.get("seeders") or 0)) > (int(existing.get("confidence") or 0), int(existing.get("seeders") or 0)):
+        if existing is None or _candidate_selection_sort_key(release, database or {}, anime) > _candidate_selection_sort_key(existing, database or {}, anime):
             best_by_episode[episode] = release
     return [best_by_episode[episode] for episode in sorted(best_by_episode)]
+
+
+def _candidate_selection_sort_key(candidate: dict[str, Any], database: dict[str, Any], anime: dict[str, Any] | None = None) -> tuple[int, int, int, int, int]:
+    return (
+        _candidate_locked_release_group_rank(candidate, anime or {}),
+        _candidate_preferred_subber_rank(candidate, database),
+        _candidate_release_group_source_rank(candidate),
+        int(candidate.get("confidence") or 0),
+        int(candidate.get("seeders") or 0),
+    )
+
+
+def _candidate_locked_release_group_rank(candidate: dict[str, Any], anime: dict[str, Any]) -> int:
+    locked_group = _preferred_release_group_for_anime(anime).casefold()
+    release_group = str(candidate.get("release_group") or "").strip().casefold()
+    return 1 if locked_group and release_group == locked_group else 0
+
+
+def _candidate_preferred_subber_rank(candidate: dict[str, Any], database: dict[str, Any]) -> int:
+    release_group = str(candidate.get("release_group") or "").strip().casefold()
+    return 1 if release_group and release_group in _preferred_subbers(database) else 0
+
+
+def _candidate_release_group_source_rank(candidate: dict[str, Any]) -> int:
+    source = str(candidate.get("release_group_source") or "").strip().casefold()
+    if not source:
+        title = str(candidate.get("title") or "")
+        if re.match(r"^\s*\[[^\]]+\]", title):
+            source = "prefix"
+        elif _suffix_release_group_from_title(title):
+            source = "suffix"
+    return {"prefix": 2, "suffix": 1}.get(source, 0)
+
+
+def _suffix_release_group_from_title(title: str) -> str:
+    value = re.sub(r"\.(?:mkv|mp4|avi|m2ts|mov|webm)\s*$", "", title.strip(), flags=re.IGNORECASE)
+    while True:
+        stripped = re.sub(r"\s+(?:\[[^\]]+\]|\([^)]*\))\s*$", "", value).strip()
+        if stripped == value:
+            break
+        value = stripped
+    match = re.search(
+        r"(?:x26[45]|h\.?\s*26[45]|hevc|av1|web[-\s]?dl|webrip|bdrip|hdtv)[^-]{0,100}-([A-Za-z0-9][A-Za-z0-9._+]{1,31})$",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    group = match.group(1).strip(" ._-")
+    return "" if group.casefold() in {"dl", "rip", "sub", "subs", "multi", "dual", "audio"} else group
 
 
 def _torrent_candidate_confidence(candidate: dict[str, Any], database: dict[str, Any], anime: dict[str, Any]) -> tuple[int, list[str]]:
@@ -3537,6 +3589,9 @@ def _manual_torrent_release(anime: dict[str, Any], torrent_link: str, episode: s
         episode_number = missing[0] if len(missing) == 1 else None
     infohash = _magnet_infohash(link)
     title = _manual_torrent_title(anime, episode_number, link)
+    release_group = release_group_from_title(title)
+    if release_group == "Unknown":
+        release_group = "Manual"
     return {
         "title": title,
         "detail_url": _manual_torrent_detail_url(link),
@@ -3553,7 +3608,7 @@ def _manual_torrent_release(anime: dict[str, Any], torrent_link: str, episode: s
         "size_bytes": 0,
         "trusted": "No",
         "remake": "No",
-        "release_group": "Manual",
+        "release_group": release_group,
         "release_kind": "episode" if episode_number is not None else "batch",
         "episode": episode_number,
         "source_kind": "unknown",
@@ -3608,10 +3663,40 @@ def _manual_torrent_title(anime: dict[str, Any], episode: int | None, link: str)
             return display_names[0].strip()
     return f"[Manual] {title}"
 
+def _set_release_group_lock_from_release(anime: dict[str, Any], release: dict[str, Any], source: str) -> None:
+    group = str(release.get("release_group") or "").strip() or release_group_from_title(str(release.get("title") or ""))
+    _set_release_group_lock(anime, group, source)
+
+
+def _set_release_group_lock(anime: dict[str, Any], group: str, source: str) -> None:
+    release_group = str(group or "").strip()
+    if not release_group or release_group in {"Unknown", "Manual"}:
+        return
+    existing = _locked_release_group(anime)
+    if existing and existing.casefold() != release_group.casefold():
+        return
+    anime["release_group_lock"] = {
+        "release_group": release_group,
+        "source": str(source or "automatic"),
+        "locked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _locked_release_group(anime: dict[str, Any]) -> str:
+    lock = anime.get("release_group_lock")
+    if isinstance(lock, dict):
+        group = str(lock.get("release_group") or "").strip()
+    else:
+        group = str(anime.get("locked_release_group") or anime.get("preferred_release_group") or "").strip()
+    return "" if group in {"Unknown", "Manual"} else group
+
 def _preferred_release_group_for_anime(anime: dict[str, Any]) -> str:
     local_group = _local_release_group_preference(anime)
     if local_group:
         return local_group
+    locked_group = _locked_release_group(anime)
+    if locked_group:
+        return locked_group
     groups = []
     for queue in _download_queue_items(anime):
         if queue.get("status") not in {"queued", "downloading", "paused", "stalled", "pending_safety", "completed", "imported"}:
