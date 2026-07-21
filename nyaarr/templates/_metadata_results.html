@@ -102,16 +102,18 @@
                     <input type="hidden" name="airing_episode" value="{{ anime.airing_episode }}">
                     <input type="hidden" name="airing_source" value="{{ anime.airing_source }}">
                     <input type="hidden" name="provider_ids" value='{{ anime.provider_ids|tojson }}'>
-                    <label class="quality-select">
-                      <span>Preferred quality</span>
-                      <select name="quality_resolution">
-                        <option value="1080p" selected>1080p</option>
-                        <option value="720p">720p</option>
-                        <option value="BD">BD</option>
-                      </select>
-                    </label>
+                    <input type="hidden" name="aliases" value='{{ anime.aliases|default([])|tojson }}'>
+                    <input type="hidden" name="provider_title" value='{{ anime.provider_title|default({})|tojson }}'>
                     <details class="advanced-add-options">
                       <summary>Advanced</summary>
+                      <label class="quality-select">
+                        <span>Preferred quality</span>
+                        <select name="quality_resolution">
+                          <option value="1080p" selected>1080p</option>
+                          <option value="720p">720p</option>
+                          <option value="BD">BD</option>
+                        </select>
+                      </label>
                       <label class="quality-select nyaa-link-input">
                         <span>Manual torrent link</span>
                         <input name="nyaa_link" type="url" placeholder="Optional Nyaa, magnet, or .torrent URL">

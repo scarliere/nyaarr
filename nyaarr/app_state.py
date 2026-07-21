@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections import Counter
+from statistics import median
 from xml.etree import ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -20,8 +22,14 @@ from typing import Any
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from .airing_repository import SQLiteAiringRepository
+from .episode_title_repository import SQLiteEpisodeTitleRepository
+from .jikan_client import JikanNotFoundError, client as jikan_client
 from .metadata import (
     MetadataProviderError,
+    MetadataRateLimitError,
+    fetch_anilist_airing_window,
+    fetch_anilist_snapshot,
     search_anilist,
     search_anilist_by_id,
     search_anime_metadata,
@@ -29,6 +37,7 @@ from .metadata import (
     search_tmdb,
 )
 from .qbittorrent_client import QBittorrentError, client_from_settings
+from .persistence import REVISION_FIELD, SQLiteStateRepository
 from .torrent_finder import _title_matches as torrent_title_matches
 from .torrent_finder import episode_number_from_title, find_torrents_for_anime, release_group_from_title
 
@@ -113,16 +122,22 @@ DANGEROUS_TORRENT_EXTENSIONS = {
 }
 MEDIA_PROBE_BYTES = 16 * 1024 * 1024
 FFPROBE_TIMEOUT_SECONDS = 20
-AIRING_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_AIRING_REFRESH_MAX_AGE_SECONDS", "60"))
+AIRING_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_AIRING_REFRESH_MAX_AGE_SECONDS", str(15 * 60)))
 PERIODIC_MAINTENANCE_INTERVAL_SECONDS = int(os.environ.get("NYAARR_PERIODIC_MAINTENANCE_INTERVAL_SECONDS", "60"))
 TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS", str(PERIODIC_MAINTENANCE_INTERVAL_SECONDS)))
 TORRENT_DISPATCH_RETRY_SECONDS = int(os.environ.get("NYAARR_TORRENT_DISPATCH_RETRY_SECONDS", str(5 * 60)))
 MAX_TORRENT_SEARCHES_PER_TICK = int(os.environ.get("NYAARR_MAX_TORRENT_SEARCHES_PER_TICK", "2"))
-MAX_AIRING_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_AIRING_REFRESHES_PER_TICK", "100"))
+MAX_AIRING_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_AIRING_REFRESHES_PER_TICK", "10"))
 MAX_POSTER_REPAIRS_PER_TICK = int(os.environ.get("NYAARR_MAX_POSTER_REPAIRS_PER_TICK", "3"))
 MAX_ANILIST_METADATA_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_ANILIST_METADATA_REFRESHES_PER_TICK", "3"))
 POSTER_CHECK_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_POSTER_CHECK_MAX_AGE_SECONDS", str(24 * 60 * 60)))
 ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS", str(24 * 60 * 60)))
+JIKAN_ONGOING_TITLE_REFRESH_MAX_AGE_SECONDS = int(
+    os.environ.get("NYAARR_JIKAN_ONGOING_TITLE_REFRESH_MAX_AGE_SECONDS", str(6 * 60 * 60))
+)
+JIKAN_FINISHED_TITLE_REFRESH_MAX_AGE_SECONDS = int(
+    os.environ.get("NYAARR_JIKAN_FINISHED_TITLE_REFRESH_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60))
+)
 EXTERNAL_REQUEST_SPACING_SECONDS = float(os.environ.get("NYAARR_EXTERNAL_REQUEST_SPACING_SECONDS", "2.0"))
 ROOT_IMPORT_METADATA_ON_SAVE = os.environ.get("NYAARR_ROOT_IMPORT_METADATA_ON_SAVE") == "1"
 MAX_IGNORED_TORRENTS = int(os.environ.get("NYAARR_MAX_IGNORED_TORRENTS", "500"))
@@ -133,10 +148,14 @@ MAX_FLAGGED_FILES_PER_QUEUE = int(os.environ.get("NYAARR_MAX_FLAGGED_FILES_PER_Q
 MAX_SELECTED_FILES_PER_QUEUE = int(os.environ.get("NYAARR_MAX_SELECTED_FILES_PER_QUEUE", "100"))
 MAX_RESOLVED_METADATA_CACHE_ENTRIES = int(os.environ.get("NYAARR_MAX_RESOLVED_METADATA_CACHE_ENTRIES", "2000"))
 _STATE_MAINTENANCE_LOCK = threading.Lock()
+_EXTERNAL_MAINTENANCE_LOCK = threading.Lock()
 _USER_DATABASE_LOCK = threading.RLock()
 _ROOT_SCAN_PROGRESS_LOCK = threading.Lock()
 _ROOT_SCAN_JOB_LOCK = threading.Lock()
 _ROOT_SCAN_THREAD: threading.Thread | None = None
+_STATE_REPOSITORIES: dict[tuple[str, str], SQLiteStateRepository] = {}
+_AIRING_REPOSITORIES: dict[str, SQLiteAiringRepository] = {}
+_EPISODE_TITLE_REPOSITORIES: dict[str, SQLiteEpisodeTitleRepository] = {}
 _ROOT_SCAN_PROGRESS: dict[str, Any] = {
     "active": False,
     "phase": "Idle",
@@ -233,8 +252,8 @@ def anime_library() -> list[dict[str, Any]]:
     return _read_user_database()["anime"]
 
 
-def dashboard_model() -> dict[str, Any]:
-    database = _read_user_database()
+def dashboard_model(database: dict[str, Any] | None = None) -> dict[str, Any]:
+    database = database if database is not None else _read_user_database()
     library = database["anime"]
     manual_items, manual_changed = _manual_selection_items(database)
     if manual_changed:
@@ -242,7 +261,7 @@ def dashboard_model() -> dict[str, Any]:
     queued_rows = _activity_queued_rows(database)
     history_rows = _activity_history_rows(database)
     blocked_rows = _activity_blocked_rows(database)
-    missing_settings = missing_settings_summary()
+    missing_settings = missing_settings_summary(database)
     setup_steps = _dashboard_setup_steps(database, len(library), missing_settings)
     attention_items = _dashboard_attention_items(
         missing_settings,
@@ -265,6 +284,30 @@ def dashboard_model() -> dict[str, Any]:
             "metadata": _metadata_verification_count(library),
             "blocked": len(blocked_rows),
         },
+    }
+
+
+def dashboard_page_model() -> dict[str, Any]:
+    database = _read_user_database()
+    library = database['anime']
+    return {
+        'anime_cards': library,
+        'stats': library_stats(library),
+        'dashboard': dashboard_model(database),
+        'revision': int(database.get(REVISION_FIELD) or 0),
+    }
+
+
+def ui_bootstrap_model() -> dict[str, Any]:
+    database = _read_user_database()
+    from .maintenance import job_status_summary
+
+    return {
+        'revision': int(database.get(REVISION_FIELD) or 0),
+        'sidebar_counts': sidebar_counts(database),
+        'missing_settings': missing_settings_summary(database),
+        'root_scan': root_folder_scan_progress(),
+        'jobs': job_status_summary(),
     }
 
 
@@ -417,8 +460,11 @@ def run_startup_download_status_check() -> dict[str, Any]:
     return summary
 
 
-def run_periodic_maintenance_tick(*, include_airing: bool = True, include_external: bool = True) -> dict[str, Any]:
-    if not _STATE_MAINTENANCE_LOCK.acquire(blocking=False):
+def run_periodic_maintenance_tick(
+    *, include_airing: bool = True, include_external: bool = True, include_local: bool = True
+) -> dict[str, Any]:
+    maintenance_lock = _STATE_MAINTENANCE_LOCK if include_local else _EXTERNAL_MAINTENANCE_LOCK
+    if not maintenance_lock.acquire(blocking=False):
         return {"status": "skipped", "reason": "maintenance already running"}
 
     summary: dict[str, Any] = {
@@ -449,12 +495,13 @@ def run_periodic_maintenance_tick(*, include_airing: bool = True, include_extern
         changed = False
         now = time.time()
 
-        if _refresh_download_queue(database):
+        if include_local and _refresh_download_queue(database):
             summary["queue_refreshed"] = True
             changed = True
 
         before_library = json.dumps(database["anime"], sort_keys=True, default=str)
-        _refresh_library_states(database["anime"], root_folder_configured=_root_folder_configured(database))
+        if include_local:
+            _refresh_library_states(database["anime"], root_folder_configured=_root_folder_configured(database))
         if before_library != json.dumps(database["anime"], sort_keys=True, default=str):
             summary["library_refreshed"] = True
             changed = True
@@ -478,25 +525,12 @@ def run_periodic_maintenance_tick(*, include_airing: bool = True, include_extern
                     changed = True
             elif not include_external and _should_refresh_torrent_search(anime, now):
                 summary["torrent_searches_deferred"] += 1
-            if _should_attempt_periodic_dispatch(database, anime, now):
+            if include_external and _should_attempt_periodic_dispatch(database, anime, now):
                 anime["torrent_dispatch_attempted_at"] = datetime.now(timezone.utc).isoformat()
                 _maybe_dispatch_torrent(database, anime)
                 summary["dispatch_attempts"] += 1
                 changed = True
-            if include_external and _should_refresh_anilist_metadata(anime, now):
-                if summary["anilist_metadata_refreshes"] >= MAX_ANILIST_METADATA_REFRESHES_PER_TICK:
-                    summary["anilist_metadata_deferred"] += 1
-                    summary["external_limited"] = True
-                else:
-                    _pace_external_request(external_request_count)
-                    external_request_count += 1
-                    if _refresh_anilist_metadata(database, anime, now):
-                        changed = True
-                    summary["anilist_metadata_refreshes"] += 1
-                    summary["last_external_request_at"] = datetime.now(timezone.utc).isoformat()
-            elif not include_external and _should_refresh_anilist_metadata(anime, now):
-                summary["anilist_metadata_deferred"] += 1
-            if _sync_anime_nfo_file(anime):
+            if include_local and _sync_anime_nfo_file(anime):
                 summary["nfo_files_written"] = int(summary.get("nfo_files_written") or 0) + 1
             if include_external and _should_repair_poster(anime, now):
                 if summary["poster_repairs"] >= MAX_POSTER_REPAIRS_PER_TICK:
@@ -526,17 +560,18 @@ def run_periodic_maintenance_tick(*, include_airing: bool = True, include_extern
             )
             _write_user_database(database)
     finally:
-        _STATE_MAINTENANCE_LOCK.release()
+        maintenance_lock.release()
 
     if include_airing and include_external:
-        summary["airing"] = refresh_library_airing_schedule(force=False, max_checked=MAX_AIRING_REFRESHES_PER_TICK)
+        summary["airing"] = refresh_library_anilist_state(force=False, max_checked=MAX_AIRING_REFRESHES_PER_TICK)
         summary["airing_refreshes_deferred"] = int(summary["airing"].get("deferred", 0))
+        summary["anilist_metadata_refreshes"] = int(summary["airing"].get("checked", 0))
+        summary["anilist_metadata_deferred"] = int(summary["airing"].get("deferred", 0))
     return summary
 
 
 def _pace_external_request(request_count: int) -> None:
-    if request_count > 0 and EXTERNAL_REQUEST_SPACING_SECONDS > 0:
-        time.sleep(EXTERNAL_REQUEST_SPACING_SECONDS)
+    return None
 
 
 def _normalize_torrent_search_state(anime: dict[str, Any]) -> None:
@@ -1045,6 +1080,159 @@ def refresh_library_airing_schedule(force: bool = False, max_checked: int | None
     return summary
 
 
+def refresh_library_anilist_state(force: bool = False, max_checked: int | None = None) -> dict[str, int]:
+    database = _read_user_database()
+    summary = {"checked": 0, "updated": 0, "skipped": 0, "failed": 0, "deferred": 0}
+    changed = False
+    now = time.time()
+    repository = _airing_repository()
+    for anime in database["anime"]:
+        anilist_id = _provider_id_value(anime, "anilist") or _anilist_id_from_poster_url(anime.get("poster"))
+        if not anilist_id:
+            summary["skipped"] += 1
+            continue
+        if not force and not (
+            _should_refresh_airing_schedule(anime, now, False)
+            or _should_refresh_anilist_metadata(anime, now)
+        ):
+            summary["skipped"] += 1
+            before_state = _schedule_snapshot(anime)
+            _derive_cached_airing_state(anime, now)
+            if before_state != _schedule_snapshot(anime):
+                changed = True
+            continue
+        if max_checked is not None and summary["checked"] >= max_checked:
+            summary["deferred"] += 1
+            continue
+        summary["checked"] += 1
+        try:
+            snapshot = fetch_anilist_snapshot(anilist_id)
+        except MetadataRateLimitError:
+            raise
+        except MetadataProviderError as exc:
+            _mark_airing_schedule_checked(anime, now, str(exc))
+            summary["failed"] += 1
+            changed = True
+            continue
+        if not snapshot or not isinstance(snapshot.get("media"), dict):
+            _mark_airing_schedule_checked(anime, now, "AniList returned no media snapshot.")
+            summary["failed"] += 1
+            changed = True
+            continue
+        match = snapshot["media"]
+        anime.setdefault("torrent_search", {"candidates": [], "notices": []})
+        _apply_resolved_metadata(anime, match, _anilist_metadata_search_titles(anime), "anilist-routine")
+        exact_records = [
+            record
+            for key in ("past_airings", "future_airings")
+            for record in snapshot.get(key, [])
+            if isinstance(record, dict)
+        ]
+        repository.upsert(exact_records)
+        _store_inferred_historical_airings(anilist_id, repository, now)
+        _derive_cached_airing_state(anime, now)
+        _ensure_jikan_episode_titles(anime)
+        checked_at = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
+        anime["airing_schedule_checked_at"] = checked_at
+        anime["anilist_metadata_checked_at"] = checked_at
+        anime.pop("airing_schedule_error", None)
+        anime.pop("anilist_metadata_error", None)
+        _sync_anime_nfo_file(anime)
+        summary["updated"] += 1
+        changed = True
+    if changed:
+        _write_user_database(database)
+    return summary
+
+
+def _derive_cached_airing_state(anime: dict[str, Any], now: float | None = None) -> None:
+    media_id = _provider_id_value(anime, "anilist")
+    if not media_id:
+        return
+    current = time.time() if now is None else now
+    records = _airing_repository().for_media(media_id)
+    exact = [
+        (record, _parse_airing_datetime(record.get("airing_at")))
+        for record in records
+        if record.get("precision") == "exact"
+    ]
+    aired = [
+        (record, parsed) for record, parsed in exact
+        if parsed is not None and parsed.timestamp() <= current
+    ]
+    future = [
+        (record, parsed) for record, parsed in exact
+        if parsed is not None and parsed.timestamp() > current
+    ]
+    if aired:
+        anime["aired_episode"] = str(max(int(record["episode"]) for record, _parsed in aired))
+    if future:
+        record, parsed = min(future, key=lambda item: item[1])
+        anime["airing_episode"] = str(record["episode"])
+        anime["next_airing_at"] = parsed.isoformat().replace("+00:00", "Z")
+        anime["airing_source"] = "AniList"
+    elif _is_finished_status(anime.get("status")):
+        anime["airing_episode"] = ""
+        anime["next_airing_at"] = ""
+        anime["airing_source"] = ""
+    else:
+        previous_next = _parse_airing_datetime(anime.get("next_airing_at"))
+        if previous_next is not None and previous_next.timestamp() <= current:
+            anime["airing_episode"] = ""
+            anime["next_airing_at"] = ""
+            anime["airing_source"] = ""
+    _refresh_library_state(anime)
+
+
+def _store_inferred_historical_airings(
+    media_id: str,
+    repository: SQLiteAiringRepository,
+    now: float,
+) -> None:
+    exact = [
+        record for record in repository.for_media(media_id)
+        if record.get("precision") == "exact"
+    ]
+    by_episode = {int(record["episode"]): record for record in exact}
+    deltas = []
+    for episode in sorted(by_episode):
+        following = by_episode.get(episode + 1)
+        first_at = _parse_airing_datetime(by_episode[episode].get("airing_at"))
+        next_at = _parse_airing_datetime(following.get("airing_at")) if following else None
+        if first_at is not None and next_at is not None:
+            delta = (next_at - first_at).total_seconds()
+            if 5 * 86400 <= delta <= 9 * 86400:
+                deltas.append(delta)
+    if len(deltas) < 2:
+        return
+    cadence = median(deltas[-8:])
+    stable = [delta for delta in deltas[-8:] if abs(delta - cadence) <= 6 * 3600]
+    if len(stable) < max(2, len(deltas[-8:]) * 3 // 4):
+        return
+    anchor_episode = min(by_episode)
+    anchor_at = _parse_airing_datetime(by_episode[anchor_episode].get("airing_at"))
+    if anchor_at is None:
+        return
+    inferred = []
+    for episode in range(1, max(by_episode) + 1):
+        if episode in by_episode:
+            continue
+        airing_at = anchor_at + timedelta(seconds=cadence * (episode - anchor_episode))
+        if airing_at.timestamp() >= now:
+            continue
+        inferred.append(
+            {
+                "provider": "anilist",
+                "media_id": media_id,
+                "episode": episode,
+                "airing_at": airing_at.isoformat().replace("+00:00", "Z"),
+                "precision": "estimated",
+                "inference_source": f"cadence:{int(cadence)}",
+            }
+        )
+    repository.upsert(inferred)
+
+
 def calendar_model(view: str = "week", anchor_date: str | None = None) -> dict[str, Any]:
     database = _read_user_database()
     library = database["anime"]
@@ -1053,7 +1241,17 @@ def calendar_model(view: str = "week", anchor_date: str | None = None) -> dict[s
     anchor = _calendar_anchor_date(anchor_date, settings)
     period_start, period_end = _calendar_period_bounds(selected_view, anchor)
     display_month = anchor.month if selected_view == "month" else None
-    days = _calendar_days(period_start, period_end, library, display_month, settings)
+    repository = _airing_repository()
+    media_ids = [_provider_id_value(anime, "anilist") for anime in library]
+    media_ids = [media_id for media_id in media_ids if media_id]
+    start_utc, end_utc = _calendar_utc_bounds(period_start, period_end, settings)
+    records = repository.for_range(
+        media_ids,
+        start_utc.isoformat().replace("+00:00", "Z"),
+        end_utc.isoformat().replace("+00:00", "Z"),
+    )
+    pending_months = _enqueue_missing_calendar_airing_windows(media_ids, start_utc, end_utc)
+    days = _calendar_days(period_start, period_end, library, display_month, settings, records)
     today = _display_today(settings)
 
     return {
@@ -1068,7 +1266,123 @@ def calendar_model(view: str = "week", anchor_date: str | None = None) -> dict[s
         "scheduled_count": sum(len(day["entries"]) for day in days),
         "airing_count": sum(1 for anime in library if _is_currently_airing(anime)),
         "upcoming_entries": _upcoming_calendar_entries(library, settings=settings),
+        "history_pending": bool(pending_months),
+        "pending_months": pending_months,
     }
+
+
+def hydrate_calendar_airing_window(payload: dict[str, Any]) -> None:
+    media_ids = [str(value) for value in payload.get("media_ids", []) if str(value or "").isdigit()]
+    utc_month = str(payload.get("utc_month") or "")
+    page = max(_int_value(payload.get("page")) or 1, 1)
+    start_utc, end_utc = _utc_month_bounds(utc_month)
+    records, has_next = fetch_anilist_airing_window(
+        media_ids,
+        int(start_utc.timestamp()),
+        int(end_utc.timestamp()),
+        page=page,
+    )
+    _airing_repository().upsert(records)
+    chunk_key = hashlib.sha1(",".join(media_ids).encode("utf-8")).hexdigest()[:12]
+    if has_next:
+        from .maintenance import enqueue_job
+
+        enqueue_job(
+            "calendar_airing_window",
+            {"media_ids": media_ids, "utc_month": utc_month, "page": page + 1},
+            idempotency_key=f"calendar-airing:{utc_month}:{chunk_key}:{page + 1}",
+            priority=20,
+        )
+    else:
+        _airing_repository().mark_coverage(media_ids, utc_month)
+
+
+def hydrate_jikan_episode_titles(payload: dict[str, Any]) -> None:
+    mal_id = str(payload.get("mal_id") or "").strip()
+    page = max(_int_value(payload.get("page")) or 1, 1)
+    if not mal_id.isdigit() or int(mal_id) <= 0:
+        raise ValueError("Jikan episode-title job has an invalid MAL ID.")
+    repository = _episode_title_repository()
+    try:
+        result = jikan_client.fetch_episode_page(mal_id, page=page)
+    except JikanNotFoundError:
+        repository.mark_complete(mal_id, last_visible_page=page, record_count=len(repository.for_anime(mal_id)))
+        return
+    repository.upsert(result.get("records", []))
+    if result.get("has_next_page"):
+        from .maintenance import enqueue_job
+
+        next_page = page + 1
+        enqueue_job(
+            "jikan_episode_titles",
+            {"mal_id": mal_id, "page": next_page},
+            idempotency_key=f"jikan-episodes:{mal_id}:{next_page}",
+            priority=15,
+        )
+        return
+    repository.mark_complete(
+        mal_id,
+        last_visible_page=int(result.get("last_visible_page") or page),
+        record_count=len(repository.for_anime(mal_id)),
+    )
+
+
+def _enqueue_missing_calendar_airing_windows(
+    media_ids: list[str],
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[str]:
+    if not media_ids:
+        return []
+    from .maintenance import enqueue_job
+
+    repository = _airing_repository()
+    pending: list[str] = []
+    for utc_month in _utc_month_keys(start_utc, end_utc):
+        missing = repository.missing_coverage(media_ids, utc_month)
+        if not missing:
+            continue
+        pending.append(utc_month)
+        for offset in range(0, len(missing), 50):
+            chunk = missing[offset:offset + 50]
+            chunk_key = hashlib.sha1(",".join(chunk).encode("utf-8")).hexdigest()[:12]
+            enqueue_job(
+                "calendar_airing_window",
+                {"media_ids": chunk, "utc_month": utc_month, "page": 1},
+                idempotency_key=f"calendar-airing:{utc_month}:{chunk_key}:1",
+                priority=20,
+            )
+    return pending
+
+
+def _calendar_utc_bounds(
+    period_start: date,
+    period_end: date,
+    settings: dict[str, Any] | None,
+) -> tuple[datetime, datetime]:
+    display_timezone = _display_timezone(settings)
+    start = datetime.combine(period_start, datetime.min.time(), display_timezone)
+    end = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), display_timezone)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def _utc_month_keys(start_utc: datetime, end_utc: datetime) -> list[str]:
+    current = start_utc.date().replace(day=1)
+    final = (end_utc - timedelta(microseconds=1)).date().replace(day=1)
+    months = []
+    while current <= final:
+        months.append(current.strftime("%Y-%m"))
+        current = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return months
+
+
+def _utc_month_bounds(value: str) -> tuple[datetime, datetime]:
+    try:
+        start = datetime.strptime(value, "%Y-%m").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError("Invalid UTC calendar month.") from exc
+    next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return start, next_month
 
 def root_folder_scan_progress() -> dict[str, Any]:
     with _ROOT_SCAN_PROGRESS_LOCK:
@@ -1127,8 +1441,12 @@ def root_folder_missing() -> bool:
     return not root_folder
 
 
-def missing_settings_summary() -> dict[str, Any]:
-    settings = user_settings()
+def missing_settings_summary(database: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = (
+        database.get('settings', {})
+        if isinstance(database, dict) and isinstance(database.get('settings'), dict)
+        else user_settings()
+    )
     missing = []
     if not str(settings.get("root_folder") or "").strip():
         missing.append("root_folder")
@@ -1186,7 +1504,14 @@ def save_root_folder(root_folder: str) -> tuple[bool, str, dict[str, int]]:
 
 
 def _root_scan_thread_active() -> bool:
-    return _ROOT_SCAN_THREAD is not None and _ROOT_SCAN_THREAD.is_alive()
+    if _ROOT_SCAN_THREAD is not None and _ROOT_SCAN_THREAD.is_alive():
+        return True
+    try:
+        from .maintenance import has_active_job
+
+        return has_active_job("root_scan")
+    except Exception:
+        return False
 
 
 def _merge_scanned_anime_into_latest(
@@ -1206,9 +1531,14 @@ def _merge_scanned_anime_into_latest(
 
 
 def _start_root_folder_scan_thread(root_folder: Path) -> None:
-    global _ROOT_SCAN_THREAD
-    _ROOT_SCAN_THREAD = threading.Thread(target=_run_root_folder_scan_job, args=(root_folder,), name="nyaarr-root-folder-scan", daemon=True)
-    _ROOT_SCAN_THREAD.start()
+    from .maintenance import enqueue_job
+
+    enqueue_job(
+        "root_scan",
+        {"root_folder": str(root_folder)},
+        idempotency_key=f"root-scan:{str(root_folder).casefold()}",
+        priority=95,
+    )
 
 
 def _run_root_folder_scan_job(root_folder: Path) -> None:
@@ -1657,8 +1987,8 @@ def find_library_anime(library_id: str) -> dict[str, Any] | None:
     return next((anime for anime in anime_library() if anime["library_id"] == library_id), None)
 
 
-def library_stats() -> list[dict[str, str]]:
-    library = anime_library()
+def library_stats(library: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+    library = library if library is not None else anime_library()
     completed_count = sum(1 for anime in library if anime.get("library_state") == "Completed")
     airing_count = sum(1 for anime in library if _is_currently_airing(anime))
     not_yet_aired_count = sum(1 for anime in library if _airing_state(anime) == "Not Yet Aired")
@@ -1670,8 +2000,8 @@ def library_stats() -> list[dict[str, str]]:
     ]
 
 
-def sidebar_counts() -> dict[str, int]:
-    database = _read_user_database()
+def sidebar_counts(database: dict[str, Any] | None = None) -> dict[str, int]:
+    database = database if database is not None else _read_user_database()
     library = database["anime"]
     wanted_count = sum(
         1
@@ -1687,7 +2017,7 @@ def sidebar_counts() -> dict[str, int]:
         "manual_selection": len(manual_items),
         "metadata_verification": _metadata_verification_count(library),
         "wanted": wanted_count,
-        "settings_missing": missing_settings_summary()["count"],
+        "settings_missing": missing_settings_summary(database)["count"],
         "events": _event_count(database),
     }
 
@@ -1706,11 +2036,15 @@ def activity_model(section: str) -> dict[str, Any]:
         "history": "Nyaarr torrents that reached completion or were imported.",
         "blocked": "Rejected flagged torrents kept out of future candidate selection.",
     }
+    selected_rows = rows[selected]
+    page_size = 200
     return {
         "section": selected,
         "label": labels[selected],
         "description": descriptions[selected],
-        "rows": rows[selected],
+        "rows": selected_rows[:page_size],
+        "total_rows": len(selected_rows),
+        "has_more": len(selected_rows) > page_size,
         "counts": {key: len(value) for key, value in rows.items()},
     }
 
@@ -1721,6 +2055,7 @@ def anime_detail_model(library_id: str) -> dict[str, Any] | None:
     if anime is None:
         return None
     _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+    episode_titles, episode_titles_pending = _episode_title_state(anime)
     return {
         "library_id": str(anime.get("library_id") or ""),
         "title": str(anime.get("title") or anime.get("original_title") or "Unknown"),
@@ -1731,12 +2066,16 @@ def anime_detail_model(library_id: str) -> dict[str, Any] | None:
         "status": str(anime.get("status") or "Unknown"),
         "library_state": str(anime.get("library_state") or "Unknown"),
         "airing_state": str(anime.get("airing_state") or "Unknown"),
-        "air_date": _anime_detail_date(anime.get("air_date")),
+        "air_date": _anime_detail_date(anime.get("start_date") or anime.get("air_date")),
         "runtime": str(anime.get("runtime") or "Unknown"),
         "studio": str(anime.get("studio") or "Unknown"),
         "source": str(anime.get("source") or "Unknown"),
         "rating": str(anime.get("rating") or "Unrated"),
         "genres": anime.get("genres") if isinstance(anime.get("genres"), list) else [],
+        "media_format": str(anime.get("media_format") or "Unknown"),
+        "release_season": str(anime.get("release_season") or ""),
+        "season_year": str(anime.get("season_year") or ""),
+        "source_material": str(anime.get("source_material") or ""),
         "quality_profile": str(anime.get("quality_profile") or _quality_profile_label(anime)),
         "quality_resolution": _quality_resolution(anime),
         "season_number": _season_hint_value(anime.get("season_number")) or 1,
@@ -1747,16 +2086,83 @@ def anime_detail_model(library_id: str) -> dict[str, Any] | None:
         "provider_ids": anime.get("provider_ids") if isinstance(anime.get("provider_ids"), dict) else {},
         "anilist_id": _provider_id_value(anime, "anilist"),
         "manual_anilist_id": str(anime.get("manual_anilist_id") or ""),
-        "episodes": _anime_episode_rows(anime),
+        "episodes": _anime_episode_rows(anime, episode_titles),
+        "episode_titles_pending": episode_titles_pending,
     }
 
 
-def _anime_episode_rows(anime: dict[str, Any]) -> list[dict[str, Any]]:
+def anime_episode_titles_model(library_id: str) -> dict[str, Any] | None:
+    database = _read_user_database()
+    anime = _find_database_anime(database, library_id)
+    if anime is None:
+        return None
+    records, pending = _episode_title_state(anime)
+    return {
+        "titles": {
+            str(episode): _episode_title_text(record, episode)
+            for episode, record in records.items()
+            if _episode_title_text(record, episode) != f"Episode {episode}"
+        },
+        "pending": pending,
+        "source": "Jikan",
+    }
+
+
+def _episode_title_state(anime: dict[str, Any]) -> tuple[dict[int, dict[str, Any]], bool]:
+    mal_id = _provider_id_value(anime, "mal")
+    if not mal_id:
+        return {}, False
+    repository = _episode_title_repository()
+    records = {
+        int(record["episode"]): record
+        for record in repository.for_anime(mal_id)
+        if _int_value(record.get("episode")) is not None
+    }
+    pending = _ensure_jikan_episode_titles(anime)
+    return records, pending
+
+
+def _ensure_jikan_episode_titles(anime: dict[str, Any]) -> bool:
+    mal_id = _provider_id_value(anime, "mal")
+    if not mal_id or not mal_id.isdigit() or int(mal_id) <= 0:
+        return False
+    repository = _episode_title_repository()
+    max_age = (
+        JIKAN_FINISHED_TITLE_REFRESH_MAX_AGE_SECONDS
+        if _is_finished_status(anime.get("status"))
+        else JIKAN_ONGOING_TITLE_REFRESH_MAX_AGE_SECONDS
+    )
+    if not repository.is_due(mal_id, max_age_seconds=max_age):
+        return repository.is_pending(mal_id)
+    try:
+        from .maintenance import enqueue_job
+
+        enqueue_job(
+            "jikan_episode_titles",
+            {"mal_id": mal_id, "page": 1},
+            idempotency_key=f"jikan-episodes:{mal_id}:1",
+            priority=15,
+        )
+        repository.mark_requested(mal_id)
+    except Exception:
+        return repository.is_pending(mal_id)
+    return True
+
+
+def _anime_episode_rows(
+    anime: dict[str, Any],
+    episode_titles: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     completion = anime.get("completion") if isinstance(anime.get("completion"), dict) else {}
     expected = _int_value(completion.get("expected_episodes")) or _expected_episode_count(anime)
     progress_target = _int_value(completion.get("progress_target")) or expected
     local_files = _local_episode_file_map(anime)
     queue_map = _episode_queue_map(anime)
+    media_id = _provider_id_value(anime, "anilist")
+    schedule_by_episode = {
+        int(record["episode"]): record
+        for record in (_airing_repository().for_media(media_id) if media_id else [])
+    }
     total = max([value for value in [expected, progress_target, *local_files.keys(), *queue_map.keys()] if isinstance(value, int)] or [0])
     if total <= 0:
         return []
@@ -1783,8 +2189,9 @@ def _anime_episode_rows(anime: dict[str, Any]) -> list[dict[str, Any]]:
                 "season": season,
                 "episode": episode,
                 "label": f"S{season:02d}E{episode:02d}",
-                "title": f"Episode {episode}",
-                "air_date": _episode_air_date_label(anime, episode),
+                "title": _episode_title_text((episode_titles or {}).get(episode), episode),
+                "air_date": _episode_air_date_label(anime, episode, schedule_by_episode),
+                "air_date_precision": str(schedule_by_episode.get(episode, {}).get("precision") or ""),
                 "status": state,
                 "tone": tone,
                 "file": Path(file_path).name if file_path else "",
@@ -1794,6 +2201,15 @@ def _anime_episode_rows(anime: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _episode_title_text(record: dict[str, Any] | None, episode: int) -> str:
+    if isinstance(record, dict):
+        for field in ("title", "title_romanji", "title_japanese"):
+            value = str(record.get(field) or "").strip()
+            if value:
+                return value
+    return f"Episode {episode}"
 
 
 def _local_episode_file_map(anime: dict[str, Any]) -> dict[int, str]:
@@ -1849,7 +2265,15 @@ def _episode_quality_label(anime: dict[str, Any], queue: dict[str, Any] | None) 
     return "Unknown"
 
 
-def _episode_air_date_label(anime: dict[str, Any], episode: int) -> str:
+def _episode_air_date_label(
+    anime: dict[str, Any],
+    episode: int,
+    schedule_by_episode: dict[int, dict[str, Any]] | None = None,
+) -> str:
+    record = (schedule_by_episode or {}).get(episode)
+    if record and record.get("airing_at"):
+        label = _display_datetime_label(record.get("airing_at"))
+        return f"{label} (estimated)" if record.get("precision") == "estimated" else label
     airing_episode = _int_value(anime.get("airing_episode"))
     if airing_episode == episode and anime.get("next_airing_at"):
         return _display_datetime_label(anime.get("next_airing_at"))
@@ -2008,12 +2432,13 @@ def _metadata_verification_count(library: list[dict[str, Any]]) -> int:
     return sum(1 for anime in library if anime.get("manual_verification_required"))
 
 def event_log_model(limit: int = 100) -> dict[str, Any]:
-    rows = event_log_rows(limit=limit)
-    return {"rows": rows, "count": _event_count(_read_user_database())}
-
-
-def event_log_rows(limit: int | None = 100) -> list[dict[str, str]]:
     database = _read_user_database()
+    rows = event_log_rows(limit=limit, database=database)
+    return {"rows": rows, "count": _event_count(database)}
+
+
+def event_log_rows(limit: int | None = 100, database: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    database = database if database is not None else _read_user_database()
     events = database.get("events") if isinstance(database.get("events"), list) else []
     rows = [_event_row(event) for event in events if isinstance(event, dict)]
     rows.sort(key=lambda row: row["sort_date"], reverse=True)
@@ -2975,7 +3400,9 @@ def _delete_wrong_release_group_queue(
     queue: dict[str, Any],
     torrent_hash: str,
 ) -> None:
-    local_group = _local_release_group_preference(anime) or _locked_release_group(anime)
+    local_file_group = _local_release_group_preference(anime)
+    locked_group = _locked_release_group(anime)
+    local_group = local_file_group or locked_group
     queue_group = _queue_release_group(queue)
     try:
         if torrent_hash:
@@ -2989,7 +3416,12 @@ def _delete_wrong_release_group_queue(
 
     queue["status"] = "rejected"
     queue["rejected_at"] = datetime.now(timezone.utc).isoformat()
-    queue["message"] = f"Rejected {queue_group} release because this anime is locked to {local_group}. Searching for a matching subber."
+    reason = (
+        f'existing episodes use {local_group}'
+        if local_file_group
+        else f'this anime is locked to {local_group}'
+    )
+    queue["message"] = f"Rejected {queue_group} release because {reason}. Searching for a matching subber."
     removed_files = _remove_wrong_release_group_imported_files(anime, queue)
     if removed_files:
         queue["removed_episode_files"] = removed_files
@@ -3367,6 +3799,10 @@ def _selected_download_releases(
             continue
         if not candidate.get("torrent_url"):
             continue
+        if candidate.get("release_kind") == "batch" and _explicit_ongoing_anime(anime):
+            verification = candidate.get("batch_verification")
+            if not isinstance(verification, dict) or verification.get("status") != "verified":
+                continue
         candidate_episode = _int_value(candidate.get("episode"))
         if missing_episodes and candidate.get("release_kind") == "episode":
             if candidate_episode not in missing_episodes or candidate_episode in queued_episodes:
@@ -3593,6 +4029,7 @@ def _manual_torrent_release(anime: dict[str, Any], torrent_link: str, episode: s
     if release_group == "Unknown":
         release_group = "Manual"
     return {
+        "library_id": str(anime.get("library_id") or ""),
         "title": title,
         "detail_url": _manual_torrent_detail_url(link),
         "torrent_url": _manual_torrent_download_url(link),
@@ -4807,10 +5244,13 @@ def _progress_episode_target(anime: dict[str, Any], expected_episodes: int | Non
 
 
 def _current_aired_episode(anime: dict[str, Any]) -> int | None:
+    aired_episode = _int_value(anime.get("aired_episode"))
+    if aired_episode is not None:
+        return aired_episode
     next_episode = _int_value(anime.get("airing_episode"))
     if next_episode is not None:
         return max(next_episode - 1, 0)
-    return _int_value(anime.get("aired_episode"))
+    return None
 
 
 def _refresh_progress_tone(anime: dict[str, Any]) -> None:
@@ -4913,9 +5353,12 @@ def _apply_resolved_metadata(
     match_poster = str(match.get("poster") or "").strip()
     poster = match_poster or existing_poster
     poster_source = match.get("poster_source", _metadata_source_name(match)) if match_poster else str(item.get("poster_source") or "")
+    source_name = _metadata_source_name(match)
+    resolved_title = _resolved_metadata_title(item, match)
+    resolved_source = source_name if resolution_source in {"anilist-routine", "manual-anilist-id"} else f"Root Folder Scan + {source_name}"
     item.update(
         {
-            "title": match["title"],
+            "title": resolved_title,
             "original_title": match["original_title"],
             "year": match["year"],
             "status": match["status"],
@@ -4924,8 +5367,9 @@ def _apply_resolved_metadata(
             "runtime": match["runtime"],
             "genres": match["genres"],
             "aliases": match.get("aliases", []),
+            "provider_title": match.get("provider_title", item.get("provider_title", {})),
             "studio": match["studio"],
-            "source": f"Root Folder Scan + {_metadata_source_name(match)}",
+            "source": resolved_source,
             "rating": match["rating"],
             "synopsis": match["synopsis"],
             "poster": poster,
@@ -4934,6 +5378,15 @@ def _apply_resolved_metadata(
             "next_airing_at": match.get("next_airing_at", ""),
             "airing_episode": match.get("airing_episode", ""),
             "airing_source": match.get("airing_source", ""),
+            "media_format": match.get("media_format", item.get("media_format", "")),
+            "release_season": match.get("release_season", item.get("release_season", "")),
+            "season_year": match.get("season_year", item.get("season_year", "")),
+            "start_date": match.get("start_date", item.get("start_date", "")),
+            "end_date": match.get("end_date", item.get("end_date", "")),
+            "source_material": match.get("source_material", item.get("source_material", "")),
+            "country_of_origin": match.get("country_of_origin", item.get("country_of_origin", "")),
+            "is_adult": bool(match.get("is_adult", item.get("is_adult", False))),
+            "anilist_updated_at": match.get("anilist_updated_at", item.get("anilist_updated_at", "")),
             "provider_ids": match.get("provider_ids", {}),
             "manual_verification_required": False,
             "manual_verification_reason": "",
@@ -4942,10 +5395,28 @@ def _apply_resolved_metadata(
             "metadata_search_titles": search_titles,
         }
     )
-    item["torrent_search"]["query"] = match["title"]
-    item["torrent_search"]["notices"] = [f"Imported from root folder and matched to {match['source']} metadata."]
+    item["torrent_search"]["query"] = resolved_title
+    if resolution_source == "provider":
+        item["torrent_search"]["notices"] = [f"Imported from root folder and matched to {match['source']} metadata."]
     _mark_anilist_reconciliation_for_match(item, match)
     return item
+
+
+def _resolved_metadata_title(item: dict[str, Any], match: dict[str, Any]) -> str:
+    match_title = str(match.get("title") or "").strip()
+    existing_title = str(item.get("title") or "").strip()
+    if not existing_title or _metadata_source_name(match) != "AniList":
+        return match_title
+    if _metadata_compare_value(existing_title) == _metadata_compare_value(match_title):
+        return match_title
+    if _metadata_title_in_values(existing_title, _metadata_confidence_title_values(match)):
+        return existing_title
+    return match_title
+
+
+def _metadata_title_in_values(title: str, values: list[tuple[Any, float]]) -> bool:
+    title_key = _metadata_compare_value(title)
+    return bool(title_key) and any(_metadata_compare_value(value) == title_key for value, _weight in values)
 
 
 def _find_duplicate_title_conflict(
@@ -6169,51 +6640,32 @@ def _superadmin_password_error(password: str, confirm_password: str) -> str:
 
 def _read_user_database() -> dict[str, Any]:
     with _USER_DATABASE_LOCK:
-        if not USER_DATABASE_PATH.exists():
+        database = _state_repository().read()
+        if not isinstance(database.get('anime'), list):
             database = _empty_user_database()
-            _write_user_database(database)
-            return database
-
-        try:
-            with USER_DATABASE_PATH.open("r", encoding="utf-8") as database_file:
-                database = json.load(database_file)
-        except (OSError, json.JSONDecodeError):
-            database = _empty_user_database()
-            _write_user_database(database)
-            return database
-
-        if not isinstance(database, dict) or not isinstance(database.get("anime"), list):
-            database = _empty_user_database()
-            _write_user_database(database)
-            return database
-
-        database.setdefault("schema_version", DATABASE_SCHEMA_VERSION)
-        if not isinstance(database.get("settings"), dict):
-            database["settings"] = _empty_user_database()["settings"]
-        database["settings"].setdefault("download_client", _empty_download_client_settings())
-        if isinstance(database["settings"].get("download_client"), dict):
+        database.setdefault('schema_version', DATABASE_SCHEMA_VERSION)
+        if not isinstance(database.get('settings'), dict):
+            database['settings'] = _empty_user_database()['settings']
+        database['settings'].setdefault('download_client', _empty_download_client_settings())
+        if isinstance(database['settings'].get('download_client'), dict):
             for key, value in _empty_download_client_settings().items():
-                database["settings"]["download_client"].setdefault(key, value)
-        database["settings"]["preferred_subbers"] = _normalized_preferred_subbers(database["settings"].get("preferred_subbers"))
-        database["settings"].setdefault("torrent_confidence_threshold", 70)
-        database["settings"]["timezone"] = _settings_timezone_value(database["settings"].get("timezone"))
-        if not isinstance(database.get("ignored_torrents"), list):
-            database["ignored_torrents"] = []
-        if not isinstance(database.get("unmonitored_titles"), list):
-            database["unmonitored_titles"] = []
-        if not isinstance(database.get("events"), list):
-            database["events"] = []
-        changed = _merge_same_path_root_folder_duplicates(database.get("anime", []))
-        changed = _normalize_duplicate_title_conflicts(database.get("anime", [])) or changed
-        for anime in database.get("anime", []):
+                database['settings']['download_client'].setdefault(key, value)
+        database['settings']['preferred_subbers'] = _normalized_preferred_subbers(database['settings'].get('preferred_subbers'))
+        database['settings'].setdefault('torrent_confidence_threshold', 70)
+        database['settings']['timezone'] = _settings_timezone_value(database['settings'].get('timezone'))
+        for key in ('ignored_torrents', 'unmonitored_titles', 'events'):
+            if not isinstance(database.get(key), list):
+                database[key] = []
+        changed = _merge_same_path_root_folder_duplicates(database.get('anime', []))
+        changed = _normalize_duplicate_title_conflicts(database.get('anime', [])) or changed
+        for anime in database.get('anime', []):
             if not isinstance(anime, dict):
                 continue
-            anime["quality_resolution"] = _quality_resolution(anime)
-            if str(anime.get("quality_profile") or "").strip().casefold().startswith("any "):
-                anime["quality_profile"] = _quality_profile_label(anime)
+            anime['quality_resolution'] = _quality_resolution(anime)
+            if str(anime.get('quality_profile') or '').strip().casefold().startswith('any '):
+                anime['quality_profile'] = _quality_profile_label(anime)
             if _normalize_anilist_reconciliation_state(anime):
                 changed = True
-            _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
             _normalize_torrent_search_state(anime)
             if _clear_stale_manual_selection(anime):
                 changed = True
@@ -6222,15 +6674,6 @@ def _read_user_database() -> dict[str, Any]:
         if changed:
             _write_user_database(database)
         return database
-
-
-def _sync_anime_nfo_files(database: dict[str, Any]) -> int:
-    library = database.get("anime") if isinstance(database.get("anime"), list) else []
-    written = 0
-    for anime in library:
-        if isinstance(anime, dict) and _sync_anime_nfo_file(anime):
-            written += 1
-    return written
 
 
 def _sync_anime_nfo_file(anime: dict[str, Any]) -> bool:
@@ -6272,7 +6715,7 @@ def _anime_nfo_xml(anime: dict[str, Any], anilist_id: str) -> str:
     unique_id.text = anilist_id
     _nfo_text(root, "id", f"anilist:{anilist_id}")
     _nfo_text(root, "plot", anime.get("synopsis"))
-    _nfo_text(root, "premiered", anime.get("air_date"))
+    _nfo_text(root, "premiered", anime.get("start_date") or anime.get("air_date"))
     year = _year_value(anime.get("year"))
     if year is not None:
         _nfo_text(root, "year", str(year))
@@ -6470,29 +6913,39 @@ def _prune_resolved_metadata_cache(cache: dict[str, Any]) -> bool:
     return True
 
 
-def _serialized_database(database: dict[str, Any]) -> str:
-    return json.dumps(database, indent=2, sort_keys=True) + "\n"
-
-
 def _write_user_database(database: dict[str, Any]) -> None:
     _prune_user_database(database)
-    _sync_anime_nfo_files(database)
-    serialized = _serialized_database(database)
     with _USER_DATABASE_LOCK:
-        USER_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if USER_DATABASE_PATH.exists() and USER_DATABASE_PATH.read_text(encoding="utf-8") == serialized:
-                return
-        except OSError:
-            pass
-        temp_path = USER_DATABASE_PATH.with_suffix(".json.tmp")
-        with temp_path.open("w", encoding="utf-8") as database_file:
-            database_file.write(serialized)
-        os.replace(temp_path, USER_DATABASE_PATH)
-        try:
-            os.chmod(USER_DATABASE_PATH, 0o600)
-        except OSError:
-            pass
+        _state_repository().write(database)
+
+
+def _state_repository() -> SQLiteStateRepository:
+    configured = os.environ.get('NYAARR_STATE_DATABASE_PATH', '').strip()
+    configured_path = str(Path(configured).resolve()) if configured else ''
+    key = (str(USER_DATABASE_PATH.resolve()), configured_path)
+    repository = _STATE_REPOSITORIES.get(key)
+    if repository is None:
+        repository = SQLiteStateRepository(USER_DATABASE_PATH, _empty_user_database)
+        _STATE_REPOSITORIES[key] = repository
+    return repository
+
+
+def _airing_repository() -> SQLiteAiringRepository:
+    database_path = str(_state_repository().database_path.resolve())
+    repository = _AIRING_REPOSITORIES.get(database_path)
+    if repository is None:
+        repository = SQLiteAiringRepository(Path(database_path))
+        _AIRING_REPOSITORIES[database_path] = repository
+    return repository
+
+
+def _episode_title_repository() -> SQLiteEpisodeTitleRepository:
+    database_path = str(_state_repository().database_path.resolve())
+    repository = _EPISODE_TITLE_REPOSITORIES.get(database_path)
+    if repository is None:
+        repository = SQLiteEpisodeTitleRepository(Path(database_path))
+        _EPISODE_TITLE_REPOSITORIES[database_path] = repository
+    return repository
 
 
 def _empty_user_database() -> dict[str, Any]:
@@ -6621,9 +7074,33 @@ def _calendar_days(
     library: list[dict[str, Any]],
     display_month: int | None,
     settings: dict[str, Any] | None = None,
+    schedule_records: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     items_by_date: dict[str, list[dict[str, Any]]] = {}
+    anime_by_media_id = {
+        _provider_id_value(anime, "anilist"): anime
+        for anime in library
+        if _provider_id_value(anime, "anilist")
+    }
+    scheduled_identities: set[tuple[str, int]] = set()
+    for record in schedule_records or []:
+        anime = anime_by_media_id.get(str(record.get("media_id") or ""))
+        airing_at = _parse_airing_datetime(record.get("airing_at"))
+        episode = _int_value(record.get("episode"))
+        if anime is None or airing_at is None or episode is None:
+            continue
+        scheduled_date = airing_at.astimezone(_display_timezone(settings)).date()
+        if scheduled_date < period_start or scheduled_date > period_end:
+            continue
+        items_by_date.setdefault(scheduled_date.isoformat(), []).append(
+            _calendar_item(anime, settings, record)
+        )
+        scheduled_identities.add((str(record.get("media_id") or ""), episode))
     for anime in library:
+        media_id = _provider_id_value(anime, "anilist")
+        next_episode = _int_value(anime.get("airing_episode"))
+        if media_id and next_episode is not None and (media_id, next_episode) in scheduled_identities:
+            continue
         scheduled_date = _anime_air_date(anime, settings)
         if scheduled_date is None or scheduled_date < period_start or scheduled_date > period_end:
             continue
@@ -6649,10 +7126,15 @@ def _calendar_days(
     return days
 
 
-def _calendar_item(anime: dict[str, Any], settings: dict[str, Any] | None = None) -> dict[str, str]:
-    next_airing_at = _parse_airing_datetime(anime.get("next_airing_at"))
+def _calendar_item(
+    anime: dict[str, Any],
+    settings: dict[str, Any] | None = None,
+    schedule_record: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    schedule_record = schedule_record or {}
+    next_airing_at = _parse_airing_datetime(schedule_record.get("airing_at") or anime.get("next_airing_at"))
     display_time = next_airing_at.astimezone(_display_timezone(settings)) if next_airing_at else None
-    episode = str(anime.get("airing_episode") or "").strip()
+    episode = str(schedule_record.get("episode") or anime.get("airing_episode") or "").strip()
     title = str(anime.get("title") or "Unknown anime")
     return {
         "title": title,
@@ -6662,12 +7144,42 @@ def _calendar_item(anime: dict[str, Any], settings: dict[str, Any] | None = None
         "status": str(anime.get("status") or "Unknown"),
         "library_state": str(anime.get("library_state") or "Unknown"),
         "source": str(anime.get("airing_source") or anime.get("source") or "Unknown"),
+        "precision": str(schedule_record.get("precision") or "exact"),
     }
 
 
 def _upcoming_calendar_entries(library: list[dict[str, Any]], limit: int = 8, settings: dict[str, Any] | None = None) -> list[dict[str, str]]:
     today = _display_today(settings)
     entries = []
+    media_ids = [_provider_id_value(anime, "anilist") for anime in library]
+    media_ids = [media_id for media_id in media_ids if media_id]
+    now = datetime.now(timezone.utc)
+    cached = _airing_repository().for_range(
+        media_ids,
+        now.isoformat().replace("+00:00", "Z"),
+        (now + timedelta(days=365)).isoformat().replace("+00:00", "Z"),
+    )
+
+
+def _explicit_ongoing_anime(anime: dict[str, Any]) -> bool:
+    status = str(anime.get("status") or "").strip().casefold()
+    airing_state = str(anime.get("airing_state") or anime.get("airing_tag") or "").strip().casefold()
+    return status in {"releasing", "airing", "currently airing", "ongoing", "current"} or airing_state == "airing"
+    anime_by_media_id = {
+        _provider_id_value(anime, "anilist"): anime
+        for anime in library if _provider_id_value(anime, "anilist")
+    }
+    for record in cached:
+        anime = anime_by_media_id.get(str(record.get("media_id") or ""))
+        parsed = _parse_airing_datetime(record.get("airing_at"))
+        if anime is None or parsed is None:
+            continue
+        item = _calendar_item(anime, settings, record)
+        item["date"] = parsed.astimezone(_display_timezone(settings)).date().isoformat()
+        item["date_label"] = _display_date_label(parsed.astimezone(_display_timezone(settings)).date(), include_year=False)
+        entries.append(item)
+    if entries:
+        return sorted(entries, key=lambda item: (item["date"], item["time"], item["title"].casefold()))[:limit]
     for anime in library:
         scheduled_date = _anime_air_date(anime, settings)
         if scheduled_date is None or scheduled_date < today:

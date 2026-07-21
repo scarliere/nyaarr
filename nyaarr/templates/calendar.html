@@ -3,6 +3,21 @@
 {% block title %}Nyaarr - Calendar{% endblock %}
 
 {% block content %}
+  {% macro calendar_entry(item, upcoming=false) %}
+    <a class="calendar-item{% if upcoming %} upcoming{% endif %}" href="{{ url_for('anime_detail', library_id=item.library_id) }}" title="{{ item.title }}">
+      {% if upcoming %}<time datetime="{{ item.date }}">{{ item.date_label }}</time>{% endif %}
+      {% if item.poster %}
+        <img src="{{ item.poster }}" alt="" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
+      {% else %}
+        <div class="calendar-poster-placeholder" aria-hidden="true"></div>
+      {% endif %}
+      <div>
+        <strong>{{ item.title }}</strong>
+        <span>{{ item.time }} &middot; {{ item.episode }}</span>
+        <em>{{ item.status }} &middot; {{ item.source }}{% if item.precision == 'estimated' %} &middot; Estimated{% endif %}</em>
+      </div>
+    </a>
+  {% endmacro %}
   <section class="hero">
     <div>
       <p class="eyebrow">Airing calendar</p>
@@ -13,6 +28,12 @@
       <a class="button" href="{{ url_for('calendar', view=calendar.view, date=calendar.previous_date) }}">Previous</a>
       <a class="button primary" href="{{ url_for('calendar', view=calendar.view) }}">Today</a>
       <a class="button" href="{{ url_for('calendar', view=calendar.view, date=calendar.next_date) }}">Next</a>
+      <form class="calendar-jump-form" action="{{ url_for('calendar') }}" method="get">
+        <input type="hidden" name="view" value="{{ calendar.view }}">
+        <label class="visually-hidden" for="calendar-jump-date">Jump to date</label>
+        <input id="calendar-jump-date" name="date" type="date" value="{{ calendar.anchor_date }}">
+        <button type="submit">Go</button>
+      </form>
     </div>
   </section>
 
@@ -44,6 +65,11 @@
           <a class="{% if calendar.view == 'month' %}active{% endif %}" href="{{ url_for('calendar', view='month', date=calendar.anchor_date) }}">Month</a>
         </div>
       </div>
+      {% if calendar.history_pending %}
+        <p class="muted" data-calendar-pending>
+          Loading archived air dates for {{ calendar.pending_months|join(', ') }}. Cached dates are shown now.
+        </p>
+      {% endif %}
 
       <div class="calendar-grid {{ calendar.view }}">
         {% for day in calendar.days %}
@@ -53,22 +79,20 @@
               <strong>{{ day.date_label }}</strong>
             </header>
             <div class="calendar-items">
-              {% for item in day.entries %}
-                <article class="calendar-item">
-                  {% if item.poster %}
-                    <img src="{{ item.poster }}" alt="{{ item.title }} poster" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
-                  {% else %}
-                    <div class="calendar-poster-placeholder" aria-hidden="true"></div>
-                  {% endif %}
-                  <div>
-                    <strong>{{ item.title }}</strong>
-                    <span>{{ item.time }} &middot; {{ item.episode }}</span>
-                    <em>{{ item.status }} &middot; {{ item.source }}</em>
-                  </div>
-                </article>
+              {% set visible_limit = 3 if calendar.view == 'month' else day.entries|length %}
+              {% for item in day.entries[:visible_limit] %}
+                {{ calendar_entry(item) }}
               {% else %}
                 <p class="calendar-empty">No known air date.</p>
               {% endfor %}
+              {% if day.entries|length > visible_limit %}
+                <details class="calendar-overflow">
+                  <summary>+{{ day.entries|length - visible_limit }} more</summary>
+                  <div class="calendar-items">
+                    {% for item in day.entries[visible_limit:] %}{{ calendar_entry(item) }}{% endfor %}
+                  </div>
+                </details>
+              {% endif %}
             </div>
           </article>
         {% endfor %}
@@ -80,19 +104,7 @@
         </div>
         <div class="upcoming-airing-list">
           {% for item in calendar.upcoming_entries %}
-            <article class="calendar-item upcoming">
-              <time datetime="{{ item.date }}">{{ item.date_label }}</time>
-              {% if item.poster %}
-                <img src="{{ item.poster }}" alt="{{ item.title }} poster" loading="lazy" onerror="this.onerror=null; this.src='{{ url_for('static', filename='img/default-icon.png') }}'; this.classList.add('poster-fallback-image');">
-              {% else %}
-                <div class="calendar-poster-placeholder" aria-hidden="true"></div>
-              {% endif %}
-              <div>
-                <strong>{{ item.title }}</strong>
-                <span>{{ item.time }} &middot; {{ item.episode }}</span>
-                <em>{{ item.status }} &middot; {{ item.source }}</em>
-              </div>
-            </article>
+            {{ calendar_entry(item, true) }}
           {% else %}
             <p class="calendar-empty">No upcoming air dates saved yet.</p>
           {% endfor %}
@@ -100,5 +112,14 @@
       </section>
     </div>
   </section>
+  {% if calendar.history_pending %}
+    <script>
+      window.setTimeout(() => {
+        if (!document.hidden && document.querySelector("[data-calendar-pending]")) {
+          window.loadAsyncPageContent?.();
+        }
+      }, 2000);
+    </script>
+  {% endif %}
 {% endblock %}
 

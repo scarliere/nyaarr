@@ -67,8 +67,9 @@
     <main class="app-shell"{% if async_data_url %} data-async-page-url="{{ async_data_url }}"{% endif %}>
       <header class="topbar">
         <form class="search" action="{{ url_for('add_anime') }}" method="get">
-          <label for="global-search">Search</label>
-          <input id="global-search" name="q" type="search" placeholder="Search anime, releases, groups" value="{{ query|default('') }}">
+          <label for="global-search">Add Anime</label>
+          <input id="global-search" name="q" type="search" placeholder="Add Anime" value="{{ query|default('') }}">
+          <button type="submit" aria-label="Search for anime">Search</button>
         </form>
         <div class="actions">
           <a class="button primary" href="{{ url_for('add_anime') }}">Add Anime</a>
@@ -192,7 +193,7 @@
           const response = await fetch(shell.dataset.asyncPageUrl, {
             headers: {"Accept": "text/html", "X-Requested-With": "fetch"}
           });
-          if (!response.ok) return;
+          if (!response.ok) throw new Error(`Page data request failed with ${response.status}`);
           const html = await response.text();
           target.innerHTML = html;
           target.querySelectorAll("script").forEach((oldScript) => {
@@ -205,13 +206,93 @@
           });
           await refreshSidebarCounts();
         } catch (error) {
-          target.querySelectorAll("[data-loading-message]").forEach((element) => {
-            element.textContent = "Unable to load data.";
-          });
+          const errorCard = document.createElement("section");
+          const heading = document.createElement("h2");
+          const message = document.createElement("p");
+          const retry = document.createElement("button");
+          errorCard.className = "async-error-state";
+          errorCard.setAttribute("role", "alert");
+          heading.textContent = "Unable to load this page";
+          message.textContent = "The current data could not be loaded. Your saved data has not been changed.";
+          retry.type = "button";
+          retry.textContent = "Retry";
+          retry.addEventListener("click", loadAsyncPageContent, {once: true});
+          errorCard.append(heading, message, retry);
+          target.replaceChildren(errorCard);
         }
       }
 
-      window.setInterval(refreshSettingsMissingBadge, 600000);
+      window.showInlineFeedback = function(form, message, tone = "error") {
+        if (!form) return;
+        let feedback = form.querySelector(":scope > .form-feedback");
+        if (!feedback) {
+          feedback = document.createElement("p");
+          feedback.className = "form-feedback";
+          feedback.setAttribute("role", "status");
+          feedback.setAttribute("aria-live", "polite");
+          form.appendChild(feedback);
+        }
+        feedback.className = `form-feedback ${tone}`;
+        feedback.textContent = message;
+      };
+
+      let uiBootstrapEtag = '';
+      let uiBootstrapResult = null;
+      let uiBootstrapInFlight = null;
+
+      async function fetchUiBootstrap() {
+        if (uiBootstrapInFlight) return uiBootstrapInFlight;
+        uiBootstrapInFlight = (async () => {
+          const headers = {'Accept': 'application/json', 'X-Requested-With': 'fetch'};
+          if (uiBootstrapEtag) headers['If-None-Match'] = uiBootstrapEtag;
+          try {
+            const response = await fetch("{{ url_for('ui_bootstrap_data') }}", {headers});
+            if (response.status === 304) return uiBootstrapResult;
+            if (!response.ok) return null;
+            uiBootstrapEtag = response.headers.get('ETag') || '';
+            uiBootstrapResult = await response.json();
+            return uiBootstrapResult;
+          } catch (error) {
+            return null;
+          } finally {
+            uiBootstrapInFlight = null;
+          }
+        })();
+        return uiBootstrapInFlight;
+      }
+      window.loadAsyncPageContent = loadAsyncPageContent;
+
+      function applyBootstrapCounts(result) {
+        const counts = result && result.sidebar_counts ? result.sidebar_counts : {};
+        document.querySelectorAll('[data-sidebar-count]').forEach((element) => {
+          const value = Number(counts[element.dataset.sidebarCount] || 0);
+          if (element.textContent !== String(value)) element.textContent = String(value);
+          element.hidden = value === 0;
+        });
+        const settingsMissing = Number(counts.settings_missing || 0);
+        const settingsLabel = document.querySelector('[data-settings-missing-count]');
+        if (settingsLabel) settingsLabel.textContent = String(settingsMissing);
+        const settingsBadge = document.getElementById('settings-missing-badge');
+        if (settingsBadge) settingsBadge.hidden = settingsMissing === 0;
+      }
+
+      refreshSidebarCounts = async function() {
+        const result = await fetchUiBootstrap();
+        if (result) applyBootstrapCounts(result);
+        return result;
+      };
+      refreshSettingsMissingBadge = refreshSidebarCounts;
+      checkRootScanForSidebarCounts = async function() {
+        const result = await refreshSidebarCounts();
+        const progress = result && result.root_scan ? result.root_scan : null;
+        if (!progress) return null;
+        rootScanSidebarLastActive = Boolean(progress.active);
+        if (progress.completed_at) rootScanSidebarLastCompletedAt = String(progress.completed_at);
+        return progress;
+      };
+      window.refreshSidebarCounts = refreshSidebarCounts;
+
+      window.setInterval(refreshSidebarCounts, 60000);
       window.addEventListener("DOMContentLoaded", () => {
         refreshSidebarCounts();
         loadAsyncPageContent();

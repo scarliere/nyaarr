@@ -15,6 +15,11 @@ Nyaarr is a Python Flask app that aims to provide a Sonarr-like experience for a
 
 ## Periodic Maintenance
 
+Current orchestration and SQLite migration details are documented in
+`knowledgebase/architecture/service-orchestration.md`. The historical behavior
+below remains the domain work performed by the scheduler, but it now runs as
+durable idempotent jobs rather than one page-coupled callback chain.
+
 `nyaarr/maintenance.py` starts a daemon thread from `create_app()` unless `NYAARR_DISABLE_PERIODIC_MAINTENANCE=1` is set. The worker calls `run_periodic_maintenance_tick()` after a short startup delay and then every `NYAARR_PERIODIC_MAINTENANCE_INTERVAL_SECONDS`, defaulting to 60 seconds.
 
 Each tick advances waiting app state without requiring a page render:
@@ -51,12 +56,13 @@ Page renders are passive for external providers. Dashboard, Calendar, Manual Sel
 - `/settings/root-folder`: POST endpoint that saves the anime root folder and scans it for local imports.
 - `/settings/root-folder/progress`: JSON endpoint polled by Settings for visible scan progress and by the shared shell to refresh sidebar Anime badge counts when a background root-folder scan finishes.
 - `/settings/root-folder/delete`: POST endpoint that clears the saved anime root folder path.
-- `/settings/status`: JSON endpoint used by the shell to refresh missing required settings every 10 minutes.
+- `/api/ui/bootstrap`: Revision-aware JSON snapshot for sidebar counts, missing settings, root-scan progress, and background-job health.
+- `/settings/status` and `/sidebar-counts`: Compatibility endpoints for older clients; the shared shell no longer polls them separately.
 - `/system/status`: System status page with disk space, runtime details, uptime, and project links.
 
 ## Shared Sidebar Counts
 
-The shared sidebar in `nyaarr/templates/base.html` renders zero-count defaults on first paint, then fetches current counts from `/sidebar-counts`. The shell also watches root-folder scan progress on every page and refreshes these counts when a background scan completes, so Anime, Manual Selection, and Metadata Review badges update even if the user left Settings.
+The shared sidebar in `nyaarr/templates/base.html` renders zero-count defaults on first paint, then uses one coalesced `/api/ui/bootstrap` request for counts, settings health, root-scan state, and job state. Conditional requests use the state revision as an ETag, and the watcher accelerates while a root scan is active.
 
 Counts shown:
 

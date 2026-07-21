@@ -1,6 +1,6 @@
 ﻿# Calendar
 
-The calendar shows saved anime that have a known next air date.
+The calendar shows exact and, where explicitly labeled, estimated episode air dates for saved anime.
 
 ## What Changed
 
@@ -13,17 +13,18 @@ The calendar shows saved anime that have a known next air date.
   - `next_airing_at`
   - `airing_episode`
   - `airing_source`
-- AniList search now requests `nextAiringEpisode` and stores the next episode date when available.
+- AniList snapshots request recent past and future `AiringSchedule` rows as well as `nextAiringEpisode`.
 - Kitsu `startDate` and TMDB `first_air_date` can seed a date-only calendar entry when that date is today or in the future.
 - The Add Anime form posts schedule fields into the local JSON library so calendar rendering does not require live provider access.
-- Opening the calendar refreshes existing saved anime that are airing, not yet aired, or unknown and have stale schedule metadata.
-- Opening the anime dashboard also recalculates and persists derived library/airing tags, so provider mapping fixes such as Kitsu `Current` to `Airing` are applied to existing saved records.
+- Opening the calendar reads indexed SQLite schedule rows only; it never waits on AniList.
+- Navigating to an uncached week, month, or historical year enqueues idempotent monthly schedule jobs for the library's AniList IDs. The fragment shows cached rows immediately and polls until the requested months are hydrated.
 
 ## Important Files
 
 - `nyaarr/__init__.py`: `/calendar` route and Add Anime schedule-field persistence.
-- `nyaarr/app_state.py`: `refresh_library_airing_schedule()` updates existing saved anime before calendar rendering.
-- `nyaarr/app_state.py`: `calendar_model()` builds week/month day grids and the upcoming-airings list from saved library data.
+- `nyaarr/airing_repository.py`: indexed exact/estimated episode schedule and per-month coverage records.
+- `nyaarr/app_state.py`: `refresh_library_anilist_state()` and `hydrate_calendar_airing_window()`.
+- `nyaarr/app_state.py`: `calendar_model()` builds week/month grids from cached rows and enqueues missing windows.
 - `nyaarr/app_state.py`: airing-state tag derivation from provider status and saved schedule fields.
 - `nyaarr/metadata.py`: AniList next-airing metadata normalization plus date-only fallback schedules.
 - `nyaarr/templates/calendar.html`: weekly/monthly calendar page.
@@ -45,11 +46,12 @@ http://127.0.0.1:1269/calendar?view=month&date=2026-06-23
 
 Weekly view renders the Monday-Sunday week containing the selected date. Monthly view renders a full week-aligned month grid. Calendar entries are sorted by the configured display timezone and title. The Upcoming airings section lists the next saved future air dates across the whole library, independent of the current grid period.
 
-Before rendering, `/calendar` refreshes schedule metadata for saved anime whose airing state is `Airing`, `Not Yet Aired`, or `Unknown`, unless that title was checked recently. The default refresh interval is 12 hours and can be changed with `NYAARR_AIRING_REFRESH_MAX_AGE_SECONDS`.
+Historical data is fetched only for a viewed period and in chunks of at most 50 AniList IDs. Pagination continues as durable background jobs, and month coverage is marked only after the final page succeeds. Returning to a covered period is a local indexed read.
 
 ## Current Limitations
 
-- Only metadata providers that expose a usable future/current air date populate the calendar. AniList provides exact next-episode timestamps through `nextAiringEpisode`; Kitsu and TMDB can provide date-only first/start air dates.
+- Full episode history requires an AniList ID. Kitsu and TMDB date-only metadata remains a compatibility fallback for a series start date.
+- AniList can omit or later correct schedule rows. Exact provider data overwrites estimates; estimates cannot overwrite exact rows.
 - Exact provider timestamps are stored as UTC but displayed and date-bucketed in the configured display timezone. Date-only fallback entries display `TBA`.
 
 ## Display Format

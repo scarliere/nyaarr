@@ -58,6 +58,24 @@
 
     <section class="settings-panel system-panel">
       <div class="section-heading">
+        <h2>Background Jobs</h2>
+      </div>
+      <dl class="system-about-list">
+        <div><dt>Active</dt><dd>{{ status.jobs.active|default(0) }}</dd></div>
+        {% for state, count in status.jobs.counts|default({})|dictsort %}
+          <div><dt>{{ state|replace('_', ' ')|title }}</dt><dd>{{ count }}</dd></div>
+        {% endfor %}
+        {% if status.jobs.oldest_pending_at %}
+          <div><dt>Oldest pending</dt><dd>{{ status.jobs.oldest_pending_at }}</dd></div>
+        {% endif %}
+      </dl>
+      {% for failure in status.jobs.recent_failures|default([]) %}
+        <p class="system-empty">{{ failure.job_type }}: {{ failure.error }}</p>
+      {% endfor %}
+    </section>
+
+    <section class="settings-panel system-panel">
+      <div class="section-heading">
         <h2>About</h2>
       </div>
       <dl class="system-about-list">
@@ -69,6 +87,20 @@
         {% endfor %}
       </dl>
     </section>
+
+    {% if status.metrics %}
+      <section class="settings-panel system-panel">
+        <div class="section-heading"><h2>Recent Latency</h2></div>
+        <dl class="system-about-list">
+          {% for metric in status.metrics %}
+            <div>
+              <dt>{{ metric.name }}</dt>
+              <dd>p95 {{ metric.p95_ms }} ms · avg {{ metric.average_ms }} ms · {{ metric.failures }} failed / {{ metric.samples }}</dd>
+            </div>
+          {% endfor %}
+        </dl>
+      </section>
+    {% endif %}
 
     <section class="settings-panel system-panel">
       <div class="section-heading">

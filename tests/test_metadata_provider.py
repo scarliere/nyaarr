@@ -47,3 +47,32 @@ def test_anilist_display_title_keeps_english_without_cour_part_conflict() -> Non
 
     assert result["title"] == "Petals of Reincarnation"
     assert result["original_title"] == "Reincarnation no Kaben"
+
+
+def test_anilist_search_prefers_exact_matched_synonym() -> None:
+    item = {
+        "id": 188384,
+        "idMal": None,
+        "title": {
+            "english": None,
+            "romaji": "Yomi no Tsugai",
+            "native": "Yomi native title",
+        },
+        "synonyms": ["Daemons do Reino das Sombras", "Daemons of the Shadow Realm"],
+        "description": "",
+        "seasonYear": 2026,
+        "status": "RELEASING",
+        "episodes": None,
+        "duration": 24,
+        "averageScore": None,
+        "nextAiringEpisode": None,
+        "genres": [],
+        "coverImage": {"large": ""},
+        "studios": {"nodes": []},
+    }
+
+    result = metadata._map_anilist_item(item, preferred_title="Daemons of the Shadow Realm")
+
+    assert result["title"] == "Daemons of the Shadow Realm"
+    assert result["original_title"] == "Yomi no Tsugai"
+    assert "Daemons do Reino das Sombras" in result["aliases"]

@@ -59,6 +59,35 @@ def test_add_page_with_query_renders_before_metadata_search(monkeypatch) -> None
     assert b"data-search-url=\"/add/search\"" in response.data
 
 
+def test_ui_bootstrap_combines_counts_jobs_and_revision(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, 'start_periodic_maintenance', lambda: None)
+    monkeypatch.setattr(
+        nyaarr,
+        'ui_bootstrap_model',
+        lambda: {
+            'revision': 7,
+            'sidebar_counts': _sidebar_counts() | {'activity': 2},
+            'missing_settings': {'count': 0, 'missing': []},
+            'root_scan': {'active': False},
+            'jobs': {'active': 1, 'counts': {'running': 1}},
+        },
+    )
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).get('/api/ui/bootstrap', headers={'Accept': 'application/json'})
+
+    assert response.status_code == 200
+    assert response.get_json()['sidebar_counts']['activity'] == 2
+    assert response.headers['ETag'] == '"7"'
+
+    unchanged = _authenticated_client(app).get(
+        '/api/ui/bootstrap',
+        headers={'Accept': 'application/json', 'If-None-Match': response.headers['ETag']},
+    )
+    assert unchanged.status_code == 304
+
+
 def test_add_search_endpoint_runs_metadata_search_and_returns_partial(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
@@ -110,6 +139,8 @@ def test_add_anime_json_redirects_to_anime_list(monkeypatch) -> None:
             "airing_episode": result["airing_episode"],
             "airing_source": result["airing_source"],
             "provider_ids": '{"anilist":"123"}',
+            "aliases": '["Async Anime", "Async Romaji"]',
+            "provider_title": '{"english":"Async Anime","romaji":"Async Romaji"}',
             "quality_resolution": "1080p",
             "nyaa_link": "",
         },
@@ -122,6 +153,8 @@ def test_add_anime_json_redirects_to_anime_list(monkeypatch) -> None:
     assert payload["redirect_url"] == "/anime/list"
     assert added and added[0][0]["title"] == "Async Anime"
     assert added[0][0]["provider_ids"] == {"anilist": "123"}
+    assert added[0][0]["aliases"] == ["Async Anime", "Async Romaji"]
+    assert added[0][0]["provider_title"] == {"english": "Async Anime", "romaji": "Async Romaji"}
 
 def test_activity_pages_render_before_activity_model(monkeypatch) -> None:
     calls = []
@@ -222,6 +255,7 @@ def test_primary_pages_render_stable_initial_models(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "root_folder_missing", lambda: calls.append("root_missing") or True)
     monkeypatch.setattr(nyaarr, "event_log_model", lambda: calls.append("events") or {"rows": [], "count": 0})
     monkeypatch.setattr(nyaarr, "system_status_model", lambda: calls.append("status") or nyaarr._empty_system_status_model())
+    monkeypatch.setattr(nyaarr, "dashboard_page_model", lambda: calls.append("dashboard") or {"anime_cards": [], "stats": [], "dashboard": nyaarr._empty_dashboard_model()})
 
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
@@ -244,24 +278,27 @@ def test_primary_pages_render_stable_initial_models(monkeypatch) -> None:
     for route in routes:
         response = client.get(route)
         assert response.status_code == 200, route
-        if route in {"/anime/manual-selection", "/anime/metadata-verification", "/system/logs", "/system/events"}:
+        if route in {
+            "/", "/anime/list", "/anime/manual-selection", "/anime/metadata-verification",
+            "/calendar", "/settings", "/system/logs", "/system/events", "/system/status",
+        }:
             assert b"<main class=\"app-shell\" data-async-page-url" in response.data, route
         else:
             assert b"<main class=\"app-shell\" data-async-page-url" not in response.data, route
 
-    assert "anime_library" in calls
-    assert "library_stats" in calls
+    assert "anime_library" not in calls
+    assert "library_stats" not in calls
     assert "manual_selection" not in calls
     assert "metadata" not in calls
-    assert "calendar" in calls
+    assert "calendar" not in calls
     assert "activity:queued" not in calls
     assert "activity:history" not in calls
     assert "activity:blocked" not in calls
-    assert "settings" in calls
-    assert "root_missing" in calls
+    assert "settings" not in calls
+    assert "root_missing" not in calls
     assert "events" not in calls
-    assert "status" in calls
-    assert "sidebar" in calls
+    assert "status" not in calls
+    assert "sidebar" not in calls
 
 
 def test_base_shell_polls_root_scan_progress_for_sidebar_badges(monkeypatch) -> None:
@@ -347,6 +384,7 @@ def test_async_data_endpoints_load_models_after_page_render(monkeypatch) -> None
     monkeypatch.setattr(nyaarr, "root_folder_missing", lambda: calls.append("root_missing") or True)
     monkeypatch.setattr(nyaarr, "event_log_model", lambda: calls.append("events") or {"rows": [], "count": 0})
     monkeypatch.setattr(nyaarr, "system_status_model", lambda: calls.append("status") or nyaarr._empty_system_status_model())
+    monkeypatch.setattr(nyaarr, "dashboard_page_model", lambda: calls.append("dashboard") or {"anime_cards": [], "stats": [], "dashboard": nyaarr._empty_dashboard_model()})
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
     client = _authenticated_client(app)
@@ -367,7 +405,7 @@ def test_async_data_endpoints_load_models_after_page_render(monkeypatch) -> None
     for route in routes:
         assert client.get(route).status_code == 200, route
 
-    assert "anime_library" in calls
+    assert "dashboard" in calls
     assert "manual_selection" in calls
     assert "metadata" in calls
     assert "calendar" in calls
@@ -460,13 +498,43 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
     assert b"Petals of Reincarnation" in response.data
     assert b"S01E01" in response.data
     assert b"Downloaded" in response.data
-    assert b"Edit AniList ID" in response.data
-    assert b"anilist-edit-dialog" in response.data
+    assert b"Options" in response.data
+    assert b"Correct metadata match" in response.data
+    assert b"anime-manage-dialog" in response.data
     assert b"Update AniList" not in response.data
     assert b"/anime/anime-1/episodes/manual-link" in response.data
     assert b'name="episode" value="2"' in response.data
     assert b"Magnet link or .torrent URL" in response.data
     assert b"<th>Action</th>" not in response.data
+
+
+def test_anime_episode_titles_endpoint_returns_cached_best_effort_titles(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
+    monkeypatch.setattr(
+        nyaarr,
+        "anime_episode_titles_model",
+        lambda library_id: {
+            "titles": {"1": "The Journey's End"},
+            "pending": library_id == "anime-1",
+            "source": "Jikan",
+        },
+    )
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+
+    response = _authenticated_client(app).get(
+        "/anime/anime-1/episode-titles",
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "titles": {"1": "The Journey's End"},
+        "pending": True,
+        "source": "Jikan",
+    }
 
 
 def test_download_client_save_json_returns_redirect(monkeypatch) -> None:

@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .models import BatchVerification, NyaaRelease
+from .metrics import timed
+
 
 NYAA_RSS_URL = "https://nyaa.si/"
 NYAA_NAMESPACE = "{https://nyaa.si/xmlns/nyaa}"
@@ -24,8 +27,20 @@ NYAA_MAX_EPISODE_SEARCH_QUERIES = max(0, int(os.environ.get("NYAARR_NYAA_MAX_EPI
 LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD = int(os.environ.get("NYAARR_LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD", "6"))
 _RSS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _RSS_CACHE_LOCK = threading.Lock()
+_RSS_INFLIGHT: dict[str, concurrent.futures.Future[list[dict[str, Any]]]] = {}
 LOW_SEED_BATCH_FALLBACK_SEEDERS = int(os.environ.get("NYAARR_LOW_SEED_BATCH_FALLBACK_SEEDERS", "3"))
 STALLED_TORRENT_BATCH_FALLBACK_SECONDS = int(os.environ.get("NYAARR_STALLED_TORRENT_BATCH_FALLBACK_SECONDS", str(6 * 60 * 60)))
+TORRENT_METAINFO_MAX_BYTES = max(1024, int(os.environ.get("NYAARR_TORRENT_METAINFO_MAX_BYTES", str(8 * 1024 * 1024))))
+TORRENT_METAINFO_CACHE_TTL_SECONDS = max(0, int(os.environ.get("NYAARR_TORRENT_METAINFO_CACHE_TTL_SECONDS", "3600")))
+_TORRENT_METAINFO_CACHE: dict[str, tuple[float, list[str]]] = {}
+_TORRENT_METAINFO_CACHE_LOCK = threading.Lock()
+_TORRENT_METAINFO_INFLIGHT: dict[str, concurrent.futures.Future[list[str]]] = {}
+_DANGEROUS_TORRENT_EXTENSIONS = {
+    ".001", ".7z", ".apk", ".app", ".bat", ".bin", ".bz2", ".cmd", ".com", ".cpl", ".deb", ".desktop",
+    ".dll", ".dmg", ".exe", ".gz", ".hta", ".ipa", ".iso", ".jar", ".js", ".jse", ".lnk", ".msi", ".msp",
+    ".php", ".pl", ".ps1", ".py", ".rar", ".reg", ".rpm", ".rb", ".scr", ".sh", ".sys", ".tar", ".url",
+    ".vb", ".vbe", ".vbs", ".wsf", ".wsh", ".xz", ".zip",
+}
 
 
 class TorrentFinderError(RuntimeError):
@@ -109,6 +124,7 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
         matched_search_title = first_matched_search_title or search_title
 
     missing_episodes = _missing_episodes(anime)
+    ongoing = _is_ongoing_anime(anime)
     if missing_episodes:
         if _should_try_large_backlog_batch_search(anime, related_releases, missing_episodes):
             before_batch_count = len(related_releases)
@@ -118,10 +134,13 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
                 related_releases,
                 preferred_group,
                 notices,
+                include_complete=not ongoing,
             )
             added_batch_count = len(related_releases) - before_batch_count
             if added_batch_count:
                 notices.append(f"Loaded {added_batch_count} upfront batch RSS candidate(s) before episode search.")
+            if ongoing:
+                related_releases = _verify_batch_releases(related_releases, missing_episodes, notices)
         if not _has_compatible_batch_candidate(anime, related_releases):
             before_count = len(related_releases)
             related_releases = _load_episode_search_releases(
@@ -145,10 +164,13 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
                 related_releases,
                 preferred_group,
                 notices,
+                include_complete=not ongoing,
             )
             added_batch_count = len(related_releases) - before_batch_count
             if added_batch_count:
                 notices.append(f"Loaded {added_batch_count} same-subber batch fallback candidate(s) before selection.")
+            if ongoing:
+                related_releases = _verify_batch_releases(related_releases, missing_episodes, notices)
 
     candidates = _select_candidates(related_releases, anime, preferred_groups)
     strategy = _selection_strategy(candidates)
@@ -225,7 +247,7 @@ def _unique_queries(queries: list[str]) -> list[str]:
     return unique
 
 
-def search_nyaa_rss(query: str) -> list[dict[str, Any]]:
+def search_nyaa_rss(query: str) -> list[NyaaRelease]:
     cache_key = query.strip().casefold()
     now = time.time()
     if NYAA_RSS_CACHE_TTL_SECONDS > 0 and NYAA_RSS_CACHE_MAX_ENTRIES != 0:
@@ -236,13 +258,208 @@ def search_nyaa_rss(query: str) -> list[dict[str, Any]]:
             if cached is not None:
                 _RSS_CACHE.pop(cache_key, None)
 
-    releases = _fetch_nyaa_rss(query)
-    if NYAA_RSS_CACHE_TTL_SECONDS > 0 and NYAA_RSS_CACHE_MAX_ENTRIES != 0:
-        with _RSS_CACHE_LOCK:
-            _prune_rss_cache_locked(now)
-            _RSS_CACHE[cache_key] = (now, [dict(release) for release in releases])
-            _prune_rss_cache_locked(now)
-    return [dict(release) for release in releases]
+    with _RSS_CACHE_LOCK:
+        future = _RSS_INFLIGHT.get(cache_key)
+        owns_request = future is None
+        if future is None:
+            future = concurrent.futures.Future()
+            _RSS_INFLIGHT[cache_key] = future
+
+    if owns_request:
+        try:
+            with timed('provider.nyaa_rss'):
+                releases = _fetch_nyaa_rss(query)
+            if NYAA_RSS_CACHE_TTL_SECONDS > 0 and NYAA_RSS_CACHE_MAX_ENTRIES != 0:
+                with _RSS_CACHE_LOCK:
+                    _prune_rss_cache_locked(now)
+                    _RSS_CACHE[cache_key] = (now, [dict(release) for release in releases])
+                    _prune_rss_cache_locked(now)
+            future.set_result([dict(release) for release in releases])
+        except Exception as exc:
+            future.set_exception(exc)
+        finally:
+            with _RSS_CACHE_LOCK:
+                _RSS_INFLIGHT.pop(cache_key, None)
+
+    try:
+        return [dict(release) for release in future.result(timeout=HTTP_TIMEOUT_SECONDS + 2)]
+    except concurrent.futures.TimeoutError as exc:
+        raise TorrentFinderError(f'Nyaa RSS search timed out while sharing query: {query}.') from exc
+
+
+def verify_batch_candidate(candidate: dict[str, Any], wanted_episodes: set[int] | list[int]) -> BatchVerification:
+    wanted_values: set[int] = set()
+    for episode in wanted_episodes:
+        try:
+            parsed_episode = int(episode)
+        except (TypeError, ValueError):
+            continue
+        if parsed_episode > 0:
+            wanted_values.add(parsed_episode)
+    wanted = sorted(wanted_values)
+    torrent_url = str(candidate.get("torrent_url") or "").strip()
+    cache_key = str(candidate.get("infohash") or torrent_url).strip().casefold()
+    now = time.time()
+    file_names: list[str] | None = None
+    if cache_key and TORRENT_METAINFO_CACHE_TTL_SECONDS:
+        with _TORRENT_METAINFO_CACHE_LOCK:
+            cached = _TORRENT_METAINFO_CACHE.get(cache_key)
+            if cached and now - cached[0] < TORRENT_METAINFO_CACHE_TTL_SECONDS:
+                file_names = list(cached[1])
+    if not torrent_url:
+        return _unavailable_batch_verification(wanted, "Torrent metadata URL is missing.", torrent_url)
+    if file_names is None:
+        with _TORRENT_METAINFO_CACHE_LOCK:
+            future = _TORRENT_METAINFO_INFLIGHT.get(cache_key)
+            owns_request = future is None
+            if future is None:
+                future = concurrent.futures.Future()
+                _TORRENT_METAINFO_INFLIGHT[cache_key] = future
+        if owns_request:
+            try:
+                file_names = _torrent_file_names(_fetch_torrent_metainfo(torrent_url))
+                if cache_key and TORRENT_METAINFO_CACHE_TTL_SECONDS:
+                    with _TORRENT_METAINFO_CACHE_LOCK:
+                        _TORRENT_METAINFO_CACHE[cache_key] = (now, list(file_names))
+                future.set_result(list(file_names))
+            except Exception as exc:
+                future.set_exception(exc)
+            finally:
+                with _TORRENT_METAINFO_CACHE_LOCK:
+                    _TORRENT_METAINFO_INFLIGHT.pop(cache_key, None)
+        try:
+            file_names = future.result(timeout=HTTP_TIMEOUT_SECONDS + 2)
+        except (TorrentFinderError, concurrent.futures.TimeoutError) as exc:
+            return _unavailable_batch_verification(wanted, str(exc), torrent_url)
+    covered = sorted({episode for name in file_names if (episode := _episode_number(Path(name).name)) is not None})
+    dangerous = sorted(name for name in file_names if Path(name).suffix.casefold() in _DANGEROUS_TORRENT_EXTENSIONS)
+    verification: BatchVerification = {
+        "status": "verified",
+        "wanted_episodes": wanted,
+        "covered_episodes": covered,
+        "uncovered_episodes": sorted(set(wanted) - set(covered)),
+        "dangerous_files": dangerous,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "source": torrent_url,
+        "reason": "Torrent file list covers all wanted aired episodes.",
+    }
+    if dangerous:
+        verification["status"] = "rejected"
+        verification["reason"] = "Torrent contains potentially executable or shortcut files."
+    elif not wanted or verification["uncovered_episodes"]:
+        verification["status"] = "rejected"
+        verification["reason"] = "Torrent file list does not cover every wanted aired episode."
+    return verification
+
+
+def _unavailable_batch_verification(wanted: list[int], reason: str, source: str) -> BatchVerification:
+    return {
+        "status": "unavailable",
+        "wanted_episodes": wanted,
+        "covered_episodes": [],
+        "uncovered_episodes": wanted,
+        "dangerous_files": [],
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "reason": reason,
+    }
+
+
+def _fetch_torrent_metainfo(torrent_url: str) -> bytes:
+    request = urllib.request.Request(
+        torrent_url,
+        headers={"Accept": "application/x-bittorrent, application/octet-stream;q=0.9", "User-Agent": "nyaarr/0.1"},
+        method="GET",
+    )
+    try:
+        with timed("provider.nyaa_torrent_metainfo"):
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                content_length = int(response.headers.get("Content-Length") or 0)
+                if content_length > TORRENT_METAINFO_MAX_BYTES:
+                    raise TorrentFinderError("Torrent metadata is larger than the configured safety limit.")
+                payload = response.read(TORRENT_METAINFO_MAX_BYTES + 1)
+    except (OSError, ValueError) as exc:
+        raise TorrentFinderError(f"Nyaa torrent metadata fetch failed: {exc}.") from exc
+    if len(payload) > TORRENT_METAINFO_MAX_BYTES:
+        raise TorrentFinderError("Torrent metadata is larger than the configured safety limit.")
+    return payload
+
+
+def _torrent_file_names(payload: bytes) -> list[str]:
+    try:
+        root = _BencodeDecoder(payload).decode()
+        info = root[b"info"]
+        files = info.get(b"files") if isinstance(info, dict) else None
+        if isinstance(files, list):
+            names = [
+                "/".join(_decode_bencode_text(part) for part in item.get(b"path", []))
+                for item in files
+                if isinstance(item, dict) and isinstance(item.get(b"path"), list)
+            ]
+        else:
+            names = [_decode_bencode_text(info[b"name"])] if isinstance(info, dict) and b"name" in info else []
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TorrentFinderError(f"Torrent metadata could not be decoded: {exc}.") from exc
+    names = [name for name in names if name]
+    if not names:
+        raise TorrentFinderError("Torrent metadata did not contain a usable file list.")
+    return names
+
+
+def _decode_bencode_text(value: Any) -> str:
+    if not isinstance(value, bytes):
+        raise ValueError("file path component is not bytes")
+    return value.decode("utf-8", errors="replace")
+
+
+class _BencodeDecoder:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.position = 0
+
+    def decode(self) -> Any:
+        value = self._read(0)
+        if self.position != len(self.payload):
+            raise ValueError("trailing bencode data")
+        return value
+
+    def _read(self, depth: int) -> Any:
+        if depth > 64 or self.position >= len(self.payload):
+            raise ValueError("invalid bencode structure")
+        marker = self.payload[self.position:self.position + 1]
+        if marker == b"i":
+            self.position += 1
+            end = self.payload.find(b"e", self.position)
+            if end < 0:
+                raise ValueError("unterminated integer")
+            value = int(self.payload[self.position:end])
+            self.position = end + 1
+            return value
+        if marker in {b"l", b"d"}:
+            self.position += 1
+            values: Any = {} if marker == b"d" else []
+            while self.payload[self.position:self.position + 1] != b"e":
+                item = self._read(depth + 1)
+                if marker == b"d":
+                    if not isinstance(item, bytes):
+                        raise ValueError("dictionary key is not bytes")
+                    values[item] = self._read(depth + 1)
+                else:
+                    values.append(item)
+                if self.position >= len(self.payload):
+                    raise ValueError("unterminated collection")
+            self.position += 1
+            return values
+        colon = self.payload.find(b":", self.position)
+        if colon < 0:
+            raise ValueError("invalid byte string")
+        length = int(self.payload[self.position:colon])
+        start = colon + 1
+        end = start + length
+        if length < 0 or end > len(self.payload):
+            raise ValueError("invalid byte string length")
+        self.position = end
+        return self.payload[start:end]
 
 
 def _prune_rss_cache_locked(now: float | None = None) -> None:
@@ -261,7 +478,7 @@ def _prune_rss_cache_locked(now: float | None = None) -> None:
         _RSS_CACHE.pop(oldest_key, None)
 
 
-def _fetch_nyaa_rss(query: str) -> list[dict[str, Any]]:
+def _fetch_nyaa_rss(query: str) -> list[NyaaRelease]:
     params = {
         "page": "rss",
         "q": query,
@@ -294,6 +511,7 @@ def _fetch_nyaa_rss(query: str) -> list[dict[str, Any]]:
         nyaa_id = _torrent_id(link) or _torrent_id(guid)
         releases.append(
             {
+                "raw_title": title,
                 "title": title,
                 "detail_url": guid if "/view/" in guid else (f"https://nyaa.si/view/{nyaa_id}" if nyaa_id else link),
                 "torrent_url": f"https://nyaa.si/download/{nyaa_id}.torrent" if nyaa_id else "",
@@ -309,6 +527,24 @@ def _fetch_nyaa_rss(query: str) -> list[dict[str, Any]]:
                 "size_bytes": _size_bytes(_child_text(item, f"{NYAA_NAMESPACE}size")),
                 "trusted": _child_text(item, f"{NYAA_NAMESPACE}trusted"),
                 "remake": _child_text(item, f"{NYAA_NAMESPACE}remake"),
+                "comments": _int_child(item, f"{NYAA_NAMESPACE}comments"),
+                "raw": {
+                    "title": title,
+                    "link": link,
+                    "guid": guid,
+                    "published": _child_text(item, "pubDate"),
+                    "category": _child_text(item, f"{NYAA_NAMESPACE}category"),
+                    "category_id": _child_text(item, f"{NYAA_NAMESPACE}categoryId"),
+                    "size": _child_text(item, f"{NYAA_NAMESPACE}size"),
+                    "infohash": _child_text(item, f"{NYAA_NAMESPACE}infoHash"),
+                },
+                "parsed": {
+                    "release_group": _release_group(title),
+                    "release_kind": _release_kind(title),
+                    "episode": _episode_number(title),
+                    "source_kind": _source_kind(title),
+                    "resolution": _resolution(title),
+                },
                 "release_group": _release_group(title),
                 "release_group_source": _release_group_source(title),
                 "release_kind": _release_kind(title),
@@ -412,6 +648,8 @@ def _should_try_large_backlog_batch_search(
 
 def _has_compatible_batch_candidate(anime: dict[str, Any], releases: list[dict[str, Any]]) -> bool:
     batch_releases = [release for release in releases if release.get("release_kind") == "batch"]
+    if _is_ongoing_anime(anime):
+        batch_releases = [release for release in batch_releases if _batch_is_verified(release)]
     if not batch_releases:
         return False
     local_group = _local_release_group_preference(anime)
@@ -436,8 +674,12 @@ def _load_batch_search_releases(
     related_releases: list[dict[str, Any]],
     preferred_group: str,
     notices: list[str],
+    *,
+    include_complete: bool = True,
 ) -> list[dict[str, Any]]:
-    queries = [f"{search_title} batch", f"{search_title} complete"]
+    queries = [f"{search_title} batch"]
+    if include_complete:
+        queries.append(f"{search_title} complete")
     if preferred_group:
         queries.extend([f"{preferred_group} {search_title}", f"{search_title} {preferred_group}"])
 
@@ -462,6 +704,36 @@ def _load_batch_search_releases(
     return loaded_releases
 
 
+def _verify_batch_releases(
+    releases: list[dict[str, Any]],
+    missing_episodes: set[int],
+    notices: list[str],
+) -> list[dict[str, Any]]:
+    verified_releases: list[dict[str, Any]] = []
+    for release in releases:
+        if release.get("release_kind") != "batch":
+            verified_releases.append(release)
+            continue
+        candidate = dict(release)
+        verification = verify_batch_candidate(candidate, missing_episodes)
+        candidate["batch_verification"] = verification
+        verified_releases.append(candidate)
+        if verification.get("status") != "verified":
+            notices.append(f"Ignored unverified batch {candidate.get('title') or 'candidate'}: {verification.get('reason') or 'verification failed'}")
+    return verified_releases
+
+
+def _batch_is_verified(release: dict[str, Any]) -> bool:
+    verification = release.get("batch_verification")
+    return isinstance(verification, dict) and verification.get("status") == "verified"
+
+
+def _is_ongoing_anime(anime: dict[str, Any]) -> bool:
+    status = str(anime.get("status") or "").strip().casefold()
+    airing_state = str(anime.get("airing_state") or anime.get("airing_tag") or "").strip().casefold()
+    return status in {"releasing", "airing", "currently airing", "ongoing", "current"} or airing_state == "airing"
+
+
 def _select_candidates(
     releases: list[dict[str, Any]],
     anime: dict[str, Any] | None = None,
@@ -483,6 +755,8 @@ def _select_candidates(
         return []
 
     batch_releases = [release for release in useful_releases if release["release_kind"] == "batch"]
+    if _is_ongoing_anime(anime):
+        batch_releases = [release for release in batch_releases if _batch_is_verified(release)]
     if local_episode_count == 0 and batch_releases:
         preferred_group = _preferred_group(batch_releases, group_preferences)
         return _sort_releases(
@@ -1032,9 +1306,10 @@ def _missing_episodes(anime: dict[str, Any]) -> set[int]:
     local_count = _positive_int(completion.get("local_episodes")) or 0
     if anime.get("library_state") == "Completed" or (target is not None and local_count >= target):
         return set()
+    aired_episode = _positive_int(anime.get("aired_episode"))
     airing_episode = _positive_int(anime.get("airing_episode"))
-    if airing_episode is not None:
-        aired_target = max(airing_episode - 1, 0)
+    if aired_episode is not None or airing_episode is not None:
+        aired_target = aired_episode if aired_episode is not None else max((airing_episode or 1) - 1, 0)
         target = min(target, aired_target) if target else aired_target
     if not target:
         return set()

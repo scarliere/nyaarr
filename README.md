@@ -64,7 +64,7 @@ Optional environment variables:
 
 Nyaarr stores local state under `data/`:
 
-- `data/user/` contains your local anime library, settings, auth hash, and session secret
+- `data/user/` contains the SQLite state database, a JSON compatibility mirror, settings, auth hash, and session secret
 - `data/cache/` contains metadata caches
 - `data/logs/` contains launcher/runtime logs
 - `data/image/` contains generated local shortcut icon assets
@@ -89,6 +89,11 @@ python -m pytest
 ```
 
 Project notes live in `knowledgebase/`.
+
+Normal launches use Waitress with eight request threads. Set `NYAARR_WEB_THREADS`
+to tune that bound. Background provider, library, and download work runs through
+the durable SQLite job queue; set `NYAARR_JOB_WORKERS` to tune its bounded worker
+pool independently.
 
 ## Status
 

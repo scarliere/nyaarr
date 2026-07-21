@@ -88,11 +88,18 @@
             <tbody>
               {% for candidate in item.candidates %}
                 <tr>
-                  <td data-label="Candidate"><strong>{{ candidate.title }}</strong></td>
-                  <td data-label="Original Title">{{ candidate.original_title }}</td>
+                  <td data-label="Candidate" class="candidate-title-cell"><strong title="{{ candidate.title }}">{{ candidate.title }}</strong></td>
+                  <td data-label="Original Title" class="table-truncate" title="{{ candidate.original_title }}">{{ candidate.original_title }}</td>
                   <td data-label="Year">{{ candidate.year }}</td>
                   <td data-label="Source">{{ candidate.source }}</td>
-                  <td data-label="Aliases">{{ candidate.aliases|join(', ') or '-' }}</td>
+                  <td data-label="Aliases">
+                    {% if candidate.aliases %}
+                      <details class="row-detail">
+                        <summary>{{ candidate.aliases|length }} alias{% if candidate.aliases|length != 1 %}es{% endif %}</summary>
+                        <span>{{ candidate.aliases|join(', ') }}</span>
+                      </details>
+                    {% else %}-{% endif %}
+                  </td>
                   <td data-label="Action">
                     <form class="metadata-verification-action" action="{{ url_for('select_metadata_verification') }}" method="post">
                       <input type="hidden" name="library_id" value="{{ item.library_id }}">
@@ -138,6 +145,7 @@
           const result = await response.json();
           window.location.href = result.redirect_url || window.location.href;
         } catch (error) {
+          window.showInlineFeedback?.(form, "The metadata choice could not be saved. Check the connection and retry.");
           if (button) {
             button.disabled = false;
             button.textContent = originalText;

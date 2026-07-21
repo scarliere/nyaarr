@@ -7,7 +7,8 @@ The Settings page owns the local anime root folder.
 - `GET /settings`: Shows root folder status and configuration.
 - `POST /settings/root-folder`: Saves the selected root folder and queues a background import scan.
 - `POST /settings/root-folder/delete`: Removes the saved root folder path.
-- `GET /settings/status`: Returns the current missing required settings summary for sidebar refreshes.
+- `GET /api/ui/bootstrap`: Returns missing settings together with sidebar counts, root-scan state, job health, and the state revision.
+- `GET /settings/status`: Compatibility endpoint returning only missing required settings.
 
 ## Behavior
 
@@ -19,7 +20,7 @@ The Settings page owns the local anime root folder.
 - Downloads target this root folder when qBittorrent is configured and a selected Nyaa candidate passes the dispatch criteria.
 - The shared sidebar counts missing required settings at render time. It shows a yellow count badge on Settings when the root folder path or download client config is absent.
 - Each incomplete Settings subsection shows its own yellow `!` explanation for the missing required input.
-- The base layout polls `/settings/status` every 10 minutes to refresh the Settings badge without a full page reload.
+- The base layout uses the coalesced `/api/ui/bootstrap` watcher to refresh the Settings badge without a full page reload.
 - Anime added through Add Anime remain in the list even when no root folder is selected. If they still need episode downloads, their dashboard state is `Undownloadable` with an orange hover badge until a root folder is configured.
 
 ## Import Scan

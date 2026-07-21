@@ -32,4 +32,10 @@ if __name__ == "__main__":
     host = os.environ.get("NYAARR_HOST", "127.0.0.1")
     port = int(os.environ.get("NYAARR_PORT", "1269"))
     debug = os.environ.get("NYAARR_DEBUG", "0") == "1"
-    app.run(host=host, port=port, debug=debug, use_reloader=False)
+    if debug:
+        app.run(host=host, port=port, debug=True, use_reloader=False)
+    else:
+        from waitress import serve
+
+        threads = max(int(os.environ.get("NYAARR_WEB_THREADS", "8")), 2)
+        serve(app, host=host, port=port, threads=threads)

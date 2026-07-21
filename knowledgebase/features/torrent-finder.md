@@ -67,6 +67,14 @@ Selection strategy:
 
 Preferred subbers are stored as `settings.preferred_subbers`, a user-defined ordered list of release groups/subbers managed from Settings > Torrent preferences. The textarea accepts one release group per line or comma-separated values, such as `SubsPlease, Erai-raws, Judas`; spaces alone are not separators. Order matters: higher entries are searched first and keep priority when otherwise suitable releases are available. The Settings UI exposes these rules in a tooltip beside the field label. The list is normalized to always include `SubsPlease` as the first default. The finder tries preferred-subber title and episode RSS queries before generic queries, and the scorer treats membership as a confidence boost without penalizing other release groups when no preferred release is available.
 
+### Ongoing-series batch policy
+
+Ongoing anime remain episode-first. Batch searches are added only for a backlog of at least `NYAARR_LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD` aired episodes (default 6), or as a same-subber fallback for stalled/low-seed episode releases. The finder never sends a `complete` query for an ongoing series.
+
+Before an ongoing batch can suppress episode RSS fan-out, be selected, or pass automatic dispatch, Nyaarr downloads only its bounded `.torrent` metainfo and decodes the file list. Every currently wanted aired episode must be represented by a parseable media filename, and dangerous executable, script, installer, archive, or shortcut files reject the candidate. Identical metainfo checks share one in-flight request and cache the decoded names for one hour. If metadata is unavailable, incomplete, or unsafe, the batch remains ineligible and per-episode search continues.
+
+This is a pre-dispatch coverage gate. qBittorrent still adds selected torrents paused and runs its stricter post-add safety/file-priority inspection before resuming.
+
 When an anime falls back to a batch, Nyaarr still records the exact missing episode numbers. After qBittorrent downloads the torrent metadata, queue refresh reads `/api/v2/torrents/files` and applies file priorities: wanted episode files stay at normal priority and unrelated files are set to priority `0`. Non-media sidecars such as pictures and URL files, sample videos, already-present episodes, and media files with unparseable episode numbers are skipped rather than downloaded blindly. Supplied add-time torrent links use the same metadata pass to classify one media file as an individual episode or multiple parseable media files as a batch, then fill the queue wanted episode list from the parsed torrent file names and store per-episode selected file mappings. Dangerous executable, script, installer, and archive sidecars still flag the torrent instead of being silently skipped.
 
 

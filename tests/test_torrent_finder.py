@@ -74,6 +74,33 @@ def anime(*, local_episodes: int = 0, progress_target: int = 5) -> dict[str, Any
     }
 
 
+def bencode(value: Any) -> bytes:
+    if isinstance(value, int):
+        return f"i{value}e".encode()
+    if isinstance(value, bytes):
+        return str(len(value)).encode() + b":" + value
+    if isinstance(value, list):
+        return b"l" + b"".join(bencode(item) for item in value) + b"e"
+    if isinstance(value, dict):
+        return b"d" + b"".join(bencode(key) + bencode(value[key]) for key in sorted(value)) + b"e"
+    raise TypeError(type(value))
+
+
+def torrent_payload(*file_names: str) -> bytes:
+    return bencode(
+        {
+            b"announce": b"https://tracker.example/announce",
+            b"info": {
+                b"name": b"Petals",
+                b"files": [
+                    {b"length": 100, b"path": [name.encode("utf-8")]}
+                    for name in file_names
+                ],
+            },
+        }
+    )
+
+
 def test_episode_selection_requires_one_group_to_cover_all_missing_episodes() -> None:
     releases = [
         release("FastGroup", 5, seeders=200),
@@ -427,6 +454,115 @@ def test_find_torrents_flags_no_candidates_for_manual_intervention(monkeypatch: 
 
     assert result["candidates"] == []
     assert "No batch or per-episode RSS candidates were found." in result["notices"]
+
+
+def test_batch_metainfo_must_cover_every_wanted_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    torrent_finder._TORRENT_METAINFO_CACHE.clear()
+    monkeypatch.setattr(
+        torrent_finder,
+        "_fetch_torrent_metainfo",
+        lambda _url: torrent_payload(
+            "[SteadySubs] Petals of Reincarnation - 01 [1080p].mkv",
+            "[SteadySubs] Petals of Reincarnation - 02 [1080p].mkv",
+        ),
+    )
+    candidate = batch_release("SteadySubs")
+    candidate["infohash"] = "coverage-test"
+
+    verified = torrent_finder.verify_batch_candidate(candidate, {1, 2})
+    rejected = torrent_finder.verify_batch_candidate(candidate, {1, 2, 3})
+
+    assert verified["status"] == "verified"
+    assert rejected["status"] == "rejected"
+    assert rejected["uncovered_episodes"] == [3]
+
+
+def test_batch_metainfo_rejects_dangerous_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    torrent_finder._TORRENT_METAINFO_CACHE.clear()
+    monkeypatch.setattr(
+        torrent_finder,
+        "_fetch_torrent_metainfo",
+        lambda _url: torrent_payload(
+            "[SteadySubs] Petals of Reincarnation - 01 [1080p].mkv",
+            "Install Codec.exe",
+        ),
+    )
+    candidate = batch_release("SteadySubs")
+    candidate["infohash"] = "danger-test"
+
+    verification = torrent_finder.verify_batch_candidate(candidate, {1})
+
+    assert verification["status"] == "rejected"
+    assert verification["dangerous_files"] == ["Install Codec.exe"]
+
+
+def test_ongoing_backlog_uses_verified_batch_without_complete_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    item = anime(progress_target=6)
+    item["status"] = "Releasing"
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        calls.append(query)
+        return [batch_release("SteadySubs")]
+
+    torrent_finder._TORRENT_METAINFO_CACHE.clear()
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
+    monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
+    monkeypatch.setattr(
+        torrent_finder,
+        "_fetch_torrent_metainfo",
+        lambda _url: torrent_payload(
+            *[
+                f"[SteadySubs] Petals of Reincarnation - {episode:02d} [1080p].mkv"
+                for episode in range(1, 7)
+            ]
+        ),
+    )
+
+    result = torrent_finder.find_torrents_for_anime(item)
+
+    assert all(" complete" not in query for query in calls)
+    assert not any(query.rsplit(" ", 1)[-1].isdigit() for query in calls)
+    assert result["candidates"][0]["release_kind"] == "batch"
+    assert result["candidates"][0]["batch_verification"]["status"] == "verified"
+
+
+def test_ongoing_backlog_falls_back_to_episode_search_when_batch_is_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    item = anime(progress_target=6)
+    item["status"] = "Releasing"
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        calls.append(query)
+        suffix = query.rsplit(" ", 1)[-1]
+        if suffix.isdigit():
+            return [release("SteadySubs", int(suffix))]
+        return [batch_release("SteadySubs")]
+
+    torrent_finder._TORRENT_METAINFO_CACHE.clear()
+    monkeypatch.setattr(torrent_finder, "NYAA_RSS_SEARCH_WORKERS", 1)
+    monkeypatch.setattr(torrent_finder, "search_nyaa_rss", fake_search)
+    monkeypatch.setattr(
+        torrent_finder,
+        "_fetch_torrent_metainfo",
+        lambda _url: (_ for _ in ()).throw(torrent_finder.TorrentFinderError("metadata unavailable")),
+    )
+
+    result = torrent_finder.find_torrents_for_anime(item)
+
+    assert all(" complete" not in query for query in calls)
+    assert [candidate["episode"] for candidate in result["candidates"]] == [1, 2, 3, 4, 5, 6]
+
+
+def test_exact_aired_episode_limits_ongoing_search_even_if_next_pointer_is_stale() -> None:
+    item = anime(progress_target=12)
+    item["status"] = "Releasing"
+    item["aired_episode"] = "8"
+    item["airing_episode"] = "12"
+
+    assert torrent_finder._missing_episodes(item) == set(range(1, 9))
 
 
 

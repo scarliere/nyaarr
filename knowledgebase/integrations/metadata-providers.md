@@ -34,6 +34,24 @@ Requested fields include:
 - genres
 - cover image
 - main studio
+- media format, release season, start/end dates, country, source material, adult flag, and provider update time
+- exact recent past/future episode airing rows
+
+`fetch_anilist_snapshot()` combines those fields with recent past and future schedules in one GraphQL callback per library item. `fetch_anilist_airing_window()` is reserved for lazy Calendar month hydration. Both use the shared `AniListClient`, which coalesces identical requests and honors provider `Retry-After` responses.
+
+AniChart is not queried separately: AniList documents that both AniList and AniChart use the AniList GraphQL API. A second AniChart scraper/wrapper would duplicate the same underlying schedule service without adding an independent source.
+
+## Jikan episode-title enrichment
+
+Jikan is outside the Add Anime provider order. It only enriches episode rows
+after AniList supplies a MAL ID. Paginated episode lists are fetched in
+low-priority durable jobs and persisted in SQLite; page renders never call
+Jikan. The UI keeps `Episode N` whenever Jikan is unavailable or has no title.
+
+The adapter serializes requests slightly slower than one per second to respect
+both documented public limits: 3 requests per second and 60 requests per minute.
+See `knowledgebase/integrations/jikan-episode-titles.md` for cache, retry, and
+configuration details.
 
 ## anime-offline-database
 
@@ -58,7 +76,8 @@ The repo includes `data/.gitkeep` and `data/cache/.gitkeep` so these directories
 
 Current behavior:
 
-- Checks/downloads the managed cache automatically when the cache is missing or older than 7 days.
+- A low-priority daily job checks the managed cache and downloads it when missing or older than 7 days.
+- Interactive search never downloads the dataset; it uses an existing cache or continues to live fallback providers.
 - Uses the managed cached JSON first after AniList unless `ANIME_OFFLINE_DATABASE_PATH` is configured.
 - Keeps the parsed JSON in memory while the process runs and reloads only if the file mtime changes.
 - Searches title and synonyms.
@@ -101,7 +120,7 @@ TMDB is intentionally last because it is not anime-native and needs credentials.
 
 ## AniList Episode Count Refresh
 
-Periodic maintenance rechecks AniList metadata for every anime with searchable titles after `NYAARR_ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS`, defaulting to 24 hours. This includes items already sourced from AniList, because provider episode counts and airing state can change after import.
+Periodic maintenance rechecks AniList metadata for every anime with an AniList ID after `NYAARR_ANILIST_METADATA_REFRESH_MAX_AGE_SECONDS`, defaulting to 24 hours. Airing titles can make the same unified snapshot due sooner through the 15-minute schedule refresh age.
 
 When a confident AniList match is found, Nyaarr updates the stored episode count, provider IDs, airing fields, aliases, and completion state. Root-folder imports that initially used fallback providers such as Kitsu are upgraded to AniList when title, year, season, and local episode count checks are compatible.
 
@@ -158,7 +177,7 @@ Live checks performed:
 - anime-offline-database search is still a linear scan through the cached dataset; add an index before large-scale use.
 - Kitsu mapper does not yet fetch genres or studios through related resources.
 - TMDB provider is not tested without credentials in this repo.
-- Metadata provider calls are synchronous inside the Flask request.
+- Add Anime searches remain synchronous inside their async page fragment. Library refreshes and Calendar history hydration run as durable background jobs.
 
 
 
@@ -170,3 +189,9 @@ When a primary metadata provider returns a confident anime match without poster 
 Root-folder imports and poster repair prefer AniList artwork when an AniList ID or confident title match is available, even if a fallback provider already supplied an anime-offline-database or Kitsu poster. Legacy fallback-backed rows are normalized into pending AniList reconciliation so the maintenance worker retries AniList metadata and poster lookup without waiting for stale fallback artwork to fail in the browser.
 Zero-episode provider or cache results are not accepted for folders that already contain local episode files. This prevents stale fallback metadata, such as an offline SANDA entry with episodes: 0, from blocking later AniList/Kitsu resolution for a real season folder.
 Manual metadata review merges compatible resolved-cache candidates with the stored live-search candidates before rendering and selection. This keeps a known AniList match visible for review when the current live provider search is temporarily rate-limited or only returns anime-offline-database fallback rows.
+
+## AniList Alias Preservation
+
+Add Anime now posts AniList aliases and provider title variants with the selected result. AniList searches prefer an exact matched title or synonym for the visible result title, and later AniList ID refreshes preserve an existing title when it is one of AniList's known title values. Routine and manual AniList refreshes store `source` as `AniList`, while root-folder provider resolution still records its scan context until reconciled.
+
+This keeps titles such as `Daemons of the Shadow Realm` from being replaced by a different synonym after the AniList ID is already known. Current limitation: if AniList does not expose the user's preferred title as a title or synonym, Nyaarr still uses AniList's canonical mapped title.

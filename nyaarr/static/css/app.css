@@ -2089,6 +2089,430 @@ h1 {
   }
 }
 
+/* Shared UI density and recovery primitives. */
+
+:where(a, button, input, select, textarea, summary):focus-visible {
+  outline: 3px solid #7bd6e6;
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.async-error-state {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  margin: 24px;
+  padding: 24px;
+  border: 1px solid rgba(217, 93, 89, 0.55);
+  border-radius: 6px;
+  background: rgba(217, 93, 89, 0.08);
+}
+
+.async-error-state p,
+.form-feedback,
+.table-refresh-status,
+.episode-title-status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.form-feedback {
+  padding: 8px 10px;
+  border-left: 3px solid var(--red);
+  background: rgba(217, 93, 89, 0.08);
+}
+
+.search button {
+  flex: 0 0 auto;
+}
+
+.anime-manage-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.anime-manage-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.anime-manage-section {
+  display: grid;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+
+.anime-manage-section:first-of-type {
+  border-top: 0;
+}
+
+.danger-zone {
+  margin-top: 6px;
+  padding: 16px;
+  border: 1px solid rgba(217, 93, 89, 0.45);
+  border-radius: 6px;
+  background: rgba(217, 93, 89, 0.07);
+}
+
+.danger-zone p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.row-options,
+.row-detail,
+.manual-source-disclosure,
+.settings-advanced,
+.calendar-overflow {
+  min-width: max-content;
+}
+
+.row-options > summary,
+.manual-source-disclosure > summary,
+.settings-advanced > summary,
+.calendar-overflow > summary,
+.row-detail > summary {
+  width: max-content;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--soft);
+  background: #1e2735;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.row-options[open] > summary,
+.manual-source-disclosure[open] > summary,
+.settings-advanced[open] > summary,
+.calendar-overflow[open] > summary {
+  border-color: var(--accent);
+}
+
+.row-options > form,
+.manual-source-disclosure > form {
+  margin-top: 8px;
+}
+
+.manual-source-disclosure {
+  margin: 0 16px 12px;
+}
+
+.settings-advanced {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.settings-advanced > summary {
+  margin-bottom: 0;
+}
+
+.settings-advanced[open] > summary {
+  margin-bottom: 14px;
+}
+
+.settings-advanced .settings-checks {
+  margin: 12px 0;
+}
+
+.dialog-danger-disclosure {
+  margin-right: auto;
+}
+
+.root-folder-options {
+  flex: 0 0 auto;
+}
+
+.activity-anime-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.activity-release-title,
+.episode-file-name,
+.table-truncate,
+.candidate-title-cell .table-primary-link,
+.candidate-title-cell > strong,
+.log-row-detail > summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-release-title {
+  color: var(--muted);
+}
+
+.episode-file-name {
+  display: block;
+  width: min(32rem, 40vw);
+}
+
+.candidate-title-cell {
+  max-width: 36rem;
+}
+
+.table-primary-link {
+  color: var(--text);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.table-primary-link:hover {
+  color: var(--accent);
+}
+
+.table-badge {
+  display: inline-flex !important;
+  width: max-content;
+  margin-left: 7px !important;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #303b50;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.table-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #121923;
+}
+
+.table-filter-bar label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.table-filter-bar input,
+.table-filter-bar select {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: #0f141c;
+}
+
+.table-filter-count {
+  margin-left: auto;
+  padding-bottom: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-row-detail {
+  max-width: 100%;
+}
+
+.log-row-detail > summary {
+  display: block;
+  max-width: 100%;
+  cursor: pointer;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.log-row-expanded {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 4px;
+  background: #0f141c;
+  white-space: normal;
+}
+
+.log-row-expanded p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.log-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.calendar-item {
+  color: inherit;
+  text-decoration: none;
+}
+
+.calendar-item:hover {
+  border-color: var(--accent);
+  background: #1a2432;
+}
+
+.calendar-jump-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.calendar-jump-form input {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: #0f141c;
+}
+
+.calendar-overflow {
+  min-width: 0;
+}
+
+.calendar-overflow > summary {
+  width: 100%;
+  text-align: center;
+}
+
+.calendar-overflow > .calendar-items {
+  margin-top: 8px;
+}
+
+@media (min-width: 761px) {
+  .activity-table th,
+  .activity-table td {
+    white-space: nowrap;
+  }
+
+  .activity-table th {
+    position: sticky;
+    top: 64px;
+    z-index: 1;
+  }
+
+  .activity-table td strong,
+  .activity-table td span {
+    display: inline;
+    max-width: none;
+    margin-top: 0;
+    overflow-wrap: normal;
+  }
+
+  .activity-table td .activity-progress span {
+    display: block;
+  }
+
+  .activity-table td .episode-state {
+    display: inline-flex;
+  }
+
+  .anime-episode-table th:first-child,
+  .anime-episode-table td:first-child,
+  .manual-selection-table th:first-child,
+  .manual-selection-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--panel);
+  }
+
+  .anime-episode-table th:first-child,
+  .manual-selection-table th:first-child {
+    z-index: 2;
+    background: #121923;
+  }
+
+  .anime-episode-table td:nth-child(2),
+  .system-logs-table td:nth-child(3),
+  .system-logs-table td:nth-child(4) {
+    max-width: 24rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .calendar-item strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .activity-table tr {
+    margin: 12px 0;
+  }
+
+  .activity-anime-line {
+    display: grid;
+    gap: 3px;
+  }
+
+  .activity-release-title,
+  .episode-file-name,
+  .table-truncate,
+  .candidate-title-cell .table-primary-link,
+  .candidate-title-cell > strong {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .episode-file-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .calendar-jump-form {
+    width: 100%;
+  }
+
+  .calendar-jump-form input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .table-filter-bar {
+    align-items: stretch;
+  }
+
+  .table-filter-bar label,
+  .table-filter-count {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .dialog-danger-disclosure {
+    margin-right: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 .nav-badges {
   display: inline-flex;
   gap: 6px;
@@ -2775,5 +3199,65 @@ h1 {
 
   .activity-progress-cell {
     grid-template-columns: minmax(0, 1fr) 42px;
+  }
+}
+
+/* Final cascade guards for rules defined by later feature sections. */
+.manual-selection-table {
+  min-width: 920px;
+}
+
+.advanced-add-options[open] {
+  display: grid;
+  gap: 8px;
+}
+
+.advanced-add-options .quality-select {
+  align-items: stretch;
+  flex-direction: column;
+  white-space: normal;
+}
+
+@media (max-width: 760px) {
+  .activity-table tr {
+    margin: 12px 0;
+  }
+}
+
+@media (min-width: 761px) {
+  .activity-table td .activity-release-title {
+    display: inline-block;
+    max-width: 26rem;
+    vertical-align: bottom;
+  }
+
+  .activity-table td .episode-file-name {
+    display: block;
+  }
+
+  .activity-table td.candidate-title-cell > strong,
+  .activity-table td.candidate-title-cell > .table-primary-link {
+    display: inline-block;
+    max-width: 30rem;
+    vertical-align: bottom;
+  }
+
+  .activity-workspace-history .activity-table td:nth-child(3),
+  .activity-workspace-history .activity-table td:nth-child(6),
+  .activity-workspace-history .system-logs-table td:nth-child(4),
+  .activity-workspace-history .system-logs-table td:nth-child(6) {
+    overflow-wrap: normal;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .search {
+    flex-wrap: wrap;
+  }
+
+  .search input {
+    flex: 1 1 12rem;
+    width: auto;
   }
 }

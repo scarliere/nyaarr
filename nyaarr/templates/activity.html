@@ -34,13 +34,14 @@
     <section class="settings-panel activity-panel">
       <div class="section-heading">
         <h2 data-activity-panel-label>{{ activity.label }}</h2>
+        <p class="table-refresh-status" data-activity-refresh-status role="status" aria-live="polite" hidden></p>
       </div>
       <div class="activity-table-wrap">
         <table class="activity-table">
           <thead>
             <tr>
               <th>Anime</th>
-              <th>Episode Number</th>
+              <th>Episode</th>
               <th>Date Added</th>
               <th>Resolution</th>
               {% if activity.section != 'history' %}<th>Time Left</th>{% endif %}
@@ -52,7 +53,9 @@
           <tbody data-activity-rows>
             {% for row in activity.rows %}
               <tr>
-                <td data-label="Anime"><strong>{{ row.anime }}</strong><span>{{ row.title }}</span></td>
+                <td data-label="Anime">
+                  <div class="activity-anime-line"><strong>{{ row.anime }}</strong><span class="activity-release-title" title="{{ row.title }}">{{ row.title }}</span></div>
+                </td>
                 <td data-label="Episode">{{ row.episode }}</td>
                 <td data-label="Date Added">{{ row.date_added }}</td>
                 <td data-label="Resolution">{{ row.resolution }}</td>
@@ -71,7 +74,7 @@
                     {% if activity.section == 'queued' and row.can_resolve and row.library_id %}
                       <div class="activity-actions">
                         <form action="{{ url_for('allow_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button type="submit">Allow</button></form>
-                        <form action="{{ url_for('reject_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button class="danger" type="submit">Reject</button></form>
+                        <form action="{{ url_for('reject_flagged_torrent_route') }}" method="post" onsubmit="return confirm('Reject this torrent candidate?');"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button class="danger" type="submit">Reject</button></form>
                       </div>
                     {% elif activity.section == 'blocked' and row.can_unblock and row.ignore_key %}
                       <div class="activity-actions">
@@ -114,6 +117,7 @@
       (() => {
         const workspace = document.querySelector("[data-activity-refresh-url]");
         const rowsBody = document.querySelector("[data-activity-rows]");
+        const refreshStatus = document.querySelector("[data-activity-refresh-status]");
         if (!workspace || !rowsBody) return;
 
         const section = workspace.dataset.activitySection || "queued";
@@ -157,12 +161,16 @@
         function animeCell(row) {
           const cell = document.createElement("td");
           cell.dataset.label = "Anime";
+          const line = document.createElement("div");
           const title = document.createElement("strong");
           const release = document.createElement("span");
+          line.className = "activity-anime-line";
+          release.className = "activity-release-title";
           title.textContent = row.anime || "Unknown";
           release.textContent = row.title || "";
-          cell.appendChild(title);
-          cell.appendChild(release);
+          release.title = row.title || "";
+          line.append(title, release);
+          cell.appendChild(line);
           return cell;
         }
 
@@ -201,7 +209,12 @@
             input.value = row.library_id;
             button.type = "submit";
             button.textContent = action === "allow" ? "Allow" : "Reject";
-            if (action === "reject") button.className = "danger";
+            if (action === "reject") {
+              button.className = "danger";
+              form.addEventListener("submit", (event) => {
+                if (!window.confirm("Reject this torrent candidate?")) event.preventDefault();
+              });
+            }
             form.appendChild(input);
             form.appendChild(button);
             wrapper.appendChild(form);
@@ -219,6 +232,7 @@
           const cells = tableRow.children;
           cells[0].querySelector("strong").textContent = row.anime || "Unknown";
           cells[0].querySelector("span").textContent = row.title || "";
+          cells[0].querySelector("span").title = row.title || "";
           cells[1].textContent = row.episode || "";
           cells[2].textContent = row.date_added || "";
           cells[3].textContent = row.resolution || "";
@@ -287,7 +301,7 @@
             const response = await fetch(refreshUrl, {
               headers: {"Accept": "application/json", "X-Requested-With": "fetch"}
             });
-            if (!response.ok) return;
+            if (!response.ok) throw new Error(`Activity request failed with ${response.status}`);
             const model = await response.json();
             setText("[data-activity-label]", model.label);
             setText("[data-activity-panel-label]", model.label);
@@ -297,6 +311,17 @@
               setText(`[data-activity-count="${key}"]`, String(value));
             }
             renderRows(model.rows || [], model.label);
+            if (refreshStatus) refreshStatus.hidden = true;
+          } catch (error) {
+            if (refreshStatus) {
+              refreshStatus.hidden = false;
+              refreshStatus.replaceChildren(document.createTextNode("Unable to refresh activity. "));
+              const retry = document.createElement("button");
+              retry.type = "button";
+              retry.textContent = "Retry";
+              retry.addEventListener("click", refreshActivity, {once: true});
+              refreshStatus.appendChild(retry);
+            }
           } finally {
             inFlight = false;
           }

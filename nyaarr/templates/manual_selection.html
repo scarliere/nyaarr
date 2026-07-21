@@ -37,7 +37,7 @@
           <table class="activity-table manual-selection-table">
             <tbody>
               <tr>
-                <td colspan="9" class="activity-empty activity-loading-cell">
+                <td colspan="7" class="activity-empty activity-loading-cell">
                   <div class="table-loading-card" role="status" aria-live="polite">
                     <strong>Loading manual selection table</strong>
                     <span>Checking low-confidence torrent candidates.</span>
@@ -68,12 +68,15 @@
           <b>{{ item.confidence }}%</b>
         </div>
         {% if item.can_submit_url and item.candidates %}
-          <form class="manual-selection-action manual-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
-            <input type="hidden" name="library_id" value="{{ item.library_id }}">
-            <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" required>
-            <input name="episode" type="number" min="1" placeholder="Episode">
-            <button type="submit">Submit Link</button>
-          </form>
+          <details class="manual-source-disclosure">
+            <summary>Assign a torrent URL</summary>
+            <form class="manual-selection-action manual-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
+              <input type="hidden" name="library_id" value="{{ item.library_id }}">
+              <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" required>
+              <input name="episode" type="number" min="1" placeholder="Episode">
+              <button type="submit">Submit Link</button>
+            </form>
+          </details>
         {% endif %}
         <div class="activity-table-wrap">
           <table class="activity-table manual-selection-table">
@@ -81,21 +84,25 @@
               <tr>
                 <th>Candidate</th>
                 <th>Subber</th>
-                <th>Type</th>
                 <th>Episode</th>
                 <th>Size</th>
                 <th>Seeders</th>
                 <th>{% if item.candidates %}Confidence{% else %}Resolution{% endif %}</th>
-                <th>{% if item.candidates %}Link{% else %}Torrent Link{% endif %}</th>
-                <th>Action</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {% for candidate in item.candidates %}
                 <tr>
-                  <td data-label="Candidate"><strong>{{ candidate.title }}</strong><span>{{ candidate.confidence_reasons|join(', ') }}</span></td>
+                  <td data-label="Candidate" class="candidate-title-cell" title="{{ candidate.confidence_reasons|join(', ') }}">
+                    {% if candidate.detail_url %}
+                      <a class="table-primary-link" href="{{ candidate.detail_url }}" target="_blank" rel="noreferrer">{{ candidate.title }}</a>
+                    {% else %}
+                      <strong>{{ candidate.title }}</strong>
+                    {% endif %}
+                    <span class="table-badge">{{ candidate.release_kind }}</span>
+                  </td>
                   <td data-label="Subber">{{ candidate.release_group }}</td>
-                  <td data-label="Type">{{ candidate.release_kind }}</td>
                   <td data-label="Episode">{{ candidate.episode or '-' }}</td>
                   <td data-label="Size">{{ candidate.size }}</td>
                   <td data-label="Seeders">{{ candidate.seeders }}</td>
@@ -105,44 +112,48 @@
                       <em>{{ candidate.confidence }}%</em>
                     </div>
                   </td>
-                  <td data-label="Link">{% if candidate.detail_url %}<a href="{{ candidate.detail_url }}" target="_blank" rel="noreferrer">Open</a>{% else %}-{% endif %}</td>
-                  <td data-label="Action">
+                  <td data-label="Actions">
                     <div class="manual-selection-actions">
                       <form class="manual-selection-action" action="{{ url_for('select_manual_torrent') }}" method="post">
                         <input type="hidden" name="library_id" value="{{ item.library_id }}">
                         <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">
                         <button type="submit">Select</button>
                       </form>
-                      <form class="manual-selection-action" action="{{ url_for('reject_manual_torrent_route') }}" method="post">
-                        <input type="hidden" name="library_id" value="{{ item.library_id }}">
-                        <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">
-                        <button class="danger" type="submit">Reject</button>
-                      </form>
+                      <details class="row-options">
+                        <summary>Options</summary>
+                        <form class="manual-selection-action" action="{{ url_for('reject_manual_torrent_route') }}" method="post">
+                          <input type="hidden" name="library_id" value="{{ item.library_id }}">
+                          <input type="hidden" name="selection_key" value="{{ candidate.selection_key }}">
+                          <button class="danger" type="submit">Reject</button>
+                        </form>
+                      </details>
                     </div>
                   </td>
                 </tr>
               {% else %}
                 {% for episode in item.needed_episodes %}
                   <tr>
-                    <td data-label="Candidate"><strong>{{ episode.label }}</strong><span>Manual torrent assignment required.</span></td>
+                    <td data-label="Candidate"><strong>{{ episode.label }}</strong><span class="table-badge">episode</span></td>
                     <td data-label="Subber">-</td>
-                    <td data-label="Type">episode</td>
                     <td data-label="Episode">{{ episode.episode }}</td>
                     <td data-label="Size">-</td>
                     <td data-label="Seeders">-</td>
                     <td data-label="Resolution">{{ episode.resolution }}</td>
-                    <td data-label="Torrent Link" colspan="2">
-                      <form class="manual-selection-action manual-link-form manual-episode-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
-                        <input type="hidden" name="library_id" value="{{ item.library_id }}">
-                        <input type="hidden" name="episode" value="{{ episode.episode }}">
-                        <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" required>
-                        <button type="submit">Assign</button>
-                      </form>
+                    <td data-label="Actions">
+                      <details class="row-options episode-source-options">
+                        <summary>Assign source</summary>
+                        <form class="manual-selection-action manual-link-form manual-episode-link-form" action="{{ url_for('submit_manual_torrent_link') }}" method="post">
+                          <input type="hidden" name="library_id" value="{{ item.library_id }}">
+                          <input type="hidden" name="episode" value="{{ episode.episode }}">
+                          <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" required>
+                          <button type="submit">Assign</button>
+                        </form>
+                      </details>
                     </td>
                   </tr>
                 {% else %}
                   <tr>
-                    <td colspan="9" class="activity-empty">No missing episodes need manual assignment.</td>
+                    <td colspan="7" class="activity-empty">No missing episodes need manual assignment.</td>
                   </tr>
                 {% endfor %}
               {% endfor %}
@@ -170,9 +181,10 @@
         event.preventDefault();
         const button = form.querySelector("button[type='submit']");
         const originalText = button ? button.textContent : "";
+        if (button?.classList.contains("danger") && !window.confirm("Reject this torrent candidate?")) return;
         if (button) {
           button.disabled = true;
-          button.textContent = button.classList.contains("danger") ? "Rejecting" : "Selecting";
+          button.textContent = button.classList.contains("danger") ? "Rejecting..." : `${originalText}...`;
         }
         try {
           const response = await fetch(form.action, {
@@ -183,6 +195,7 @@
           const result = await response.json();
           window.location.href = result.redirect_url || window.location.href;
         } catch (error) {
+          window.showInlineFeedback?.(form, "This action could not be completed. Check the connection and retry.");
           if (button) {
             button.disabled = false;
             button.textContent = originalText;

@@ -2,9 +2,12 @@ import csv
 import hashlib
 import json
 import hmac
+import time
 from io import StringIO
 
-from flask import Flask, Response, current_app, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, current_app, g, jsonify, redirect, render_template, request, session, url_for
+
+from .metrics import record_timing
 
 from .app_state import (
     activity_model,
@@ -15,9 +18,11 @@ from .app_state import (
     assign_manual_torrent,
     assign_manual_torrent_url,
     anime_detail_model,
+    anime_episode_titles_model,
     anime_library,
     calendar_model,
     dashboard_model,
+    dashboard_page_model,
     delete_anime,
     delete_download_client,
     delete_root_folder,
@@ -43,6 +48,7 @@ from .app_state import (
     test_download_client,
     unblock_ignored_torrent,
     update_anime_preferences,
+    ui_bootstrap_model,
     verify_superadmin_login,
     user_settings,
 )
@@ -65,15 +71,27 @@ def create_app() -> Flask:
     start_periodic_maintenance()
 
     @app.before_request
+    def begin_request_timing():
+        g.nyaarr_request_started = time.perf_counter()
+
+    @app.after_request
+    def record_request_timing(response: Response):
+        started = getattr(g, 'nyaarr_request_started', None)
+        if isinstance(started, float):
+            endpoint = request.endpoint or 'unknown'
+            record_timing(f'http.{endpoint}', time.perf_counter() - started, ok=response.status_code < 500)
+        return response
+
+    @app.before_request
     def require_superadmin_session():
         if _auth_route_is_public():
+            return None
+        if _session_is_authenticated():
             return None
         if not has_superadmin_account():
             if _wants_json_response():
                 return jsonify({"ok": False, "auth_required": True, "setup_required": True, "redirect_url": url_for("setup_superadmin")}), 401
             return redirect(url_for("setup_superadmin", next=request.full_path if request.query_string else request.path))
-        if _session_is_authenticated():
-            return None
         if _wants_json_response():
             return jsonify({"ok": False, "auth_required": True, "redirect_url": url_for("login")}), 401
         return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
@@ -125,24 +143,30 @@ def create_app() -> Flask:
         return redirect(url_for("login"))
     @app.context_processor
     def inject_sidebar_counts():
-        try:
-            counts = sidebar_counts()
-        except Exception:
-            counts = _empty_sidebar_counts()
-        return {"sidebar_counts": counts, "current_superadmin": session.get("superadmin_username", "")}
+        return {"sidebar_counts": _empty_sidebar_counts(), "current_superadmin": session.get("superadmin_username", "")}
+
+    @app.get("/api/ui/bootstrap")
+    def ui_bootstrap_data():
+        model = ui_bootstrap_model()
+        response = jsonify(model)
+        response.set_etag(str(model.get("revision") or 0))
+        response.make_conditional(request)
+        return response
 
     @app.get("/sidebar-counts")
     def sidebar_counts_data():
-        return jsonify(sidebar_counts())
+        return jsonify(ui_bootstrap_model()["sidebar_counts"])
 
     @app.get("/")
     def dashboard():
         return render_template(
             "dashboard.html",
             active_page="anime_list",
-            anime_cards=anime_library(),
-            stats=library_stats(),
-            dashboard=dashboard_model(),
+            anime_cards=[],
+            stats=[],
+            dashboard=_empty_dashboard_model(),
+            loading=True,
+            async_data_url=url_for("dashboard_data"),
         )
 
     @app.get("/anime/list")
@@ -151,13 +175,14 @@ def create_app() -> Flask:
 
     @app.get("/anime/list/data-page")
     def dashboard_data():
+        model = dashboard_page_model()
         return render_template(
             "dashboard.html",
             layout_template="_partial_base.html",
             active_page="anime_list",
-            anime_cards=anime_library(),
-            stats=library_stats(),
-            dashboard=dashboard_model(),
+            anime_cards=model["anime_cards"],
+            stats=model["stats"],
+            dashboard=model["dashboard"],
         )
 
     @app.get("/anime/<path:library_id>")
@@ -174,6 +199,13 @@ def create_app() -> Flask:
             anilist_summary=_anilist_summary_from_query(),
             detail_summary=_anime_detail_summary_from_query(),
         )
+
+    @app.get("/anime/<path:library_id>/episode-titles")
+    def anime_episode_titles_data(library_id: str):
+        model = anime_episode_titles_model(library_id)
+        if model is None:
+            return jsonify({"ok": False, "message": "Anime was not found."}), 404
+        return jsonify({"ok": True, **model})
 
     @app.post("/anime/<path:library_id>/episodes/manual-link")
     def submit_anime_episode_manual_torrent_link(library_id: str):
@@ -311,7 +343,9 @@ def create_app() -> Flask:
         return render_template(
             "calendar.html",
             active_page="calendar",
-            calendar=calendar_model(view, anchor_date),
+            calendar=_empty_calendar_model(view, anchor_date),
+            loading=True,
+            async_data_url=url_for("calendar_data_page", view=view, date=anchor_date) if anchor_date else url_for("calendar_data_page", view=view),
         )
 
     @app.get("/calendar/data-page")
@@ -395,8 +429,10 @@ def create_app() -> Flask:
             display_summary=_display_summary_from_query(),
             torrent_summary=_torrent_preferences_summary_from_query(),
             import_summary=_import_summary_from_query(),
-            root_folder_missing=root_folder_missing(),
-            settings=user_settings(),
+            root_folder_missing=True,
+            settings=_empty_settings_model(),
+            loading=True,
+            async_data_url=url_for("settings_data_page", **request.args),
         )
 
     @app.get("/settings/data-page")
@@ -455,7 +491,9 @@ def create_app() -> Flask:
         return render_template(
             "system_status.html",
             active_page="system_status",
-            status=system_status_model(),
+            status=_empty_system_status_model(),
+            loading=True,
+            async_data_url=url_for("system_status_data_page"),
         )
 
     @app.get("/system/status/data-page")
@@ -580,6 +618,8 @@ def create_app() -> Flask:
             "airing_episode": request.form.get("airing_episode", ""),
             "airing_source": request.form.get("airing_source", ""),
             "provider_ids": _posted_provider_ids(request.form.get("provider_ids", "")),
+            "aliases": _posted_json_list(request.form.get("aliases", "")),
+            "provider_title": _posted_json_dict(request.form.get("provider_title", "")),
             "quality_resolution": _posted_quality_resolution(request.form.get("quality_resolution")),
         }
         torrent_search = {
@@ -618,6 +658,18 @@ def create_app() -> Flask:
     return app
 
 
+def _empty_dashboard_model() -> dict[str, object]:
+    return {
+        'setup_steps': [],
+        'setup_complete': True,
+        'attention_items': [],
+        'active_downloads': [],
+        'recent_history': [],
+        'recent_anime': [],
+        'counts': {'attention': 0, 'active': 0, 'manual': 0, 'metadata': 0, 'blocked': 0},
+    }
+
+
 def _empty_sidebar_counts() -> dict[str, int]:
     return {
         "anime": 0,
@@ -645,6 +697,8 @@ def _empty_calendar_model(view: str = "week", anchor_date: str | None = None) ->
         "scheduled_count": 0,
         "airing_count": 0,
         "upcoming_entries": [],
+        "history_pending": False,
+        "pending_months": [],
     }
 
 
@@ -693,6 +747,8 @@ def _empty_system_status_model() -> dict[str, object]:
         "about": [],
         "uptime": {"seconds": 0, "label": "Loading", "started_at": "Loading"},
         "links": [],
+        "jobs": {"counts": {}, "active": 0, "oldest_pending_at": "", "recent_failures": []},
+        "metrics": [],
     }
 
 def _session_is_authenticated() -> bool:
@@ -757,13 +813,26 @@ def _posted_quality_resolution(value: str | None) -> str:
 
 
 def _posted_provider_ids(value: str | None) -> dict[str, str]:
+    raw = _posted_json_dict(value)
+    return {str(provider): str(identifier).strip() for provider, identifier in raw.items() if str(identifier or "").strip()}
+
+
+def _posted_json_dict(value: str | None) -> dict[str, object]:
     try:
         raw = json.loads(str(value or "{}"))
     except json.JSONDecodeError:
         return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(provider): str(identifier).strip() for provider, identifier in raw.items() if str(identifier or "").strip()}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _posted_json_list(value: str | None) -> list[str]:
+    try:
+        raw = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item or "").strip()]
 
 
 def _anilist_summary_from_query() -> dict[str, str] | None:

@@ -16,8 +16,8 @@
         <p class="eyebrow">Anime</p>
         <div class="anime-detail-title-row">
           <h1>{{ anime.title }}</h1>
-          <button class="icon-button anime-detail-edit-button" type="button" title="Edit AniList ID" aria-label="Edit AniList ID" onclick="document.getElementById('anilist-edit-dialog').showModal()">
-            <span aria-hidden="true">&#9881;</span>
+          <button class="anime-detail-edit-button" type="button" aria-haspopup="dialog" onclick="document.getElementById('anime-manage-dialog').showModal()">
+            Options
           </button>
         </div>
         {% if anime.original_title and anime.original_title != anime.title %}<p class="anime-detail-original">{{ anime.original_title }}</p>{% endif %}
@@ -51,50 +51,56 @@
             <strong>{{ detail_summary.message }}</strong>
           </div>
         {% endif %}
-        <dialog id="anilist-edit-dialog" class="settings-dialog anime-edit-dialog">
-          <form class="settings-form anime-anilist-form" action="{{ url_for('update_anime_anilist_id', library_id=anime.library_id) }}" method="post">
-            <div class="section-heading compact">
-              <div>
-                <h2>Edit AniList ID</h2>
-                <p>Use this when a folder import matched the wrong anime or movie entry.</p>
-              </div>
-              <button class="icon-button" type="button" title="Close" aria-label="Close" onclick="document.getElementById('anilist-edit-dialog').close()">&times;</button>
+        <dialog id="anime-manage-dialog" class="settings-dialog anime-manage-dialog">
+          <div class="dialog-heading anime-manage-heading">
+            <div>
+              <p class="eyebrow">Anime options</p>
+              <h2>Manage {{ anime.title }}</h2>
             </div>
+            <button class="icon-button" type="button" title="Close" aria-label="Close" onclick="document.getElementById('anime-manage-dialog').close()">&times;</button>
+          </div>
+          <section class="anime-manage-section">
+            <h3>Preferences</h3>
+            <form class="settings-form" action="{{ url_for('update_anime_preferences_route', library_id=anime.library_id) }}" method="post">
+              <div class="settings-field-grid">
+                <label>
+                  <span>Quality</span>
+                  <select name="quality_resolution">
+                    {% for option in ['Any', '1080p', '720p', 'BD'] %}
+                      <option value="{{ option }}" {% if option == anime.quality_resolution %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span>Season</span>
+                  <input name="season_number" type="number" min="1" step="1" value="{{ anime.season_number }}">
+                </label>
+              </div>
+              <div class="settings-checks">
+                <label><input name="monitored" type="checkbox" {% if anime.monitored %}checked{% endif %}> Monitored</label>
+              </div>
+              <button class="primary" type="submit">Save preferences</button>
+            </form>
+          </section>
+          <section class="anime-manage-section">
+            <h3>Correct metadata match</h3>
+            <p class="muted">Use this when a folder import matched the wrong anime or movie entry.</p>
+            <form class="settings-form anime-anilist-form" action="{{ url_for('update_anime_anilist_id', library_id=anime.library_id) }}" method="post">
             <label for="anilist-id">AniList ID</label>
             <div class="folder-input-row">
               <input id="anilist-id" name="anilist_id" type="number" min="1" step="1" value="{{ anime.anilist_id }}" placeholder="179950">
               <button class="primary" type="submit">Update</button>
             </div>
-          </form>
+            </form>
+          </section>
+          <section class="anime-manage-section danger-zone">
+            <h3>Danger zone</h3>
+            <p>Removing this entry does not delete local episode files.</p>
+            <form class="settings-form" action="{{ url_for('delete_anime_route', library_id=anime.library_id) }}" method="post" onsubmit="return confirm('Remove this anime from Nyaarr? Local files will not be deleted.');">
+              <button class="danger" type="submit">Remove from library</button>
+            </form>
+          </section>
         </dialog>
-        <section class="anime-detail-panel anime-preferences-panel">
-          <div class="section-heading compact">
-            <h2>Preferences</h2>
-          </div>
-          <form class="settings-form" action="{{ url_for('update_anime_preferences_route', library_id=anime.library_id) }}" method="post">
-            <div class="settings-field-grid">
-              <label>
-                <span>Quality</span>
-                <select name="quality_resolution">
-                  {% for option in ['Any', '1080p', '720p', 'BD'] %}
-                    <option value="{{ option }}" {% if option == anime.quality_resolution %}selected{% endif %}>{{ option }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              <label>
-                <span>Season</span>
-                <input name="season_number" type="number" min="1" step="1" value="{{ anime.season_number }}">
-              </label>
-            </div>
-            <div class="settings-checks">
-              <label><input name="monitored" type="checkbox" {% if anime.monitored %}checked{% endif %}> Monitored</label>
-            </div>
-            <button class="primary" type="submit">Save preferences</button>
-          </form>
-          <form class="settings-form" action="{{ url_for('delete_anime_route', library_id=anime.library_id) }}" method="post" onsubmit="return confirm('Remove this anime from Nyaarr? Local files will not be deleted.');">
-            <button class="danger" type="submit">Remove from library</button>
-          </form>
-        </section>
       </div>
     </div>
 
@@ -106,6 +112,7 @@
             <p>{{ anime.completion.local_episodes }} of {{ anime.completion.progress_target or anime.completion.expected_episodes }} available</p>
           {% endif %}
         </div>
+        {% if anime.episode_titles_pending %}<p class="episode-title-status" data-episode-title-status role="status" aria-live="polite">Loading episode titles...</p>{% endif %}
       </div>
       {% if anime.episodes %}
         <div class="activity-table-wrap">
@@ -124,7 +131,7 @@
               {% for episode in anime.episodes %}
                 <tr>
                   <td data-label="Episode"><strong>{{ episode.label }}</strong></td>
-                  <td data-label="Title">{{ episode.title }}</td>
+                  <td data-label="Title" class="table-truncate" title="{{ episode.title }}" data-episode-title="{{ episode.episode }}">{{ episode.title }}</td>
                   <td data-label="Air Date">{{ episode.air_date }}</td>
                   <td data-label="Status">
                     <span class="episode-state {{ episode.tone }}">{{ episode.status }}{% if episode.progress is not none and episode.status not in ['Downloaded', 'Imported'] %} {{ episode.progress }}%{% endif %}</span>
@@ -132,13 +139,16 @@
                   <td data-label="Quality">{{ episode.quality }}</td>
                   <td data-label="File">
                     {% if episode.file %}
-                      <span title="{{ episode.path }}">{{ episode.file }}</span>
+                      <span class="episode-file-name" title="{{ episode.path }}">{{ episode.file }}</span>
                     {% elif episode.tone == "missing" %}
-                      <form class="manual-selection-action manual-link-form manual-episode-link-form anime-episode-link-form" action="{{ url_for('submit_anime_episode_manual_torrent_link', library_id=anime.library_id) }}" method="post">
-                        <input type="hidden" name="episode" value="{{ episode.episode }}">
-                        <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" aria-label="Torrent link for {{ episode.label }}" required>
-                        <button type="submit">Assign</button>
-                      </form>
+                      <details class="row-options episode-source-options">
+                        <summary>Assign source</summary>
+                        <form class="manual-selection-action manual-link-form manual-episode-link-form anime-episode-link-form" action="{{ url_for('submit_anime_episode_manual_torrent_link', library_id=anime.library_id) }}" method="post">
+                          <input type="hidden" name="episode" value="{{ episode.episode }}">
+                          <input name="torrent_link" type="url" placeholder="Magnet link or .torrent URL" aria-label="Torrent link for {{ episode.label }}" required>
+                          <button type="submit">Assign</button>
+                        </form>
+                      </details>
                     {% else %}
                       -
                     {% endif %}
@@ -153,4 +163,60 @@
       {% endif %}
     </section>
   </section>
+  {% if anime.episode_titles_pending %}
+    <script>
+      (() => {
+        let attempts = 0;
+        const status = document.querySelector("[data-episode-title-status]");
+        const showRetry = () => {
+          if (!status) return;
+          status.textContent = "Some episode titles are still unavailable. ";
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.textContent = "Retry";
+          retry.addEventListener("click", () => {
+            attempts = 0;
+            status.textContent = "Loading episode titles...";
+            refreshTitles();
+          }, {once: true});
+          status.appendChild(retry);
+        };
+        const refreshTitles = async () => {
+          if (document.hidden) {
+            window.setTimeout(refreshTitles, 2000);
+            return;
+          }
+          if (attempts >= 5) {
+            showRetry();
+            return;
+          }
+          attempts += 1;
+          try {
+            const response = await fetch(
+              "{{ url_for('anime_episode_titles_data', library_id=anime.library_id) }}",
+              {headers: {"Accept": "application/json", "X-Requested-With": "fetch"}}
+            );
+            if (!response.ok) return;
+            const payload = await response.json();
+            Object.entries(payload.titles || {}).forEach(([episode, title]) => {
+              const cell = document.querySelector(`[data-episode-title="${episode}"]`);
+              if (cell && title) {
+                cell.textContent = title;
+                cell.title = title;
+              }
+            });
+            if (payload.pending) {
+              window.setTimeout(refreshTitles, Math.min(2000 * (2 ** attempts), 16000));
+            } else if (status) {
+              status.hidden = true;
+            }
+          } catch (error) {
+            if (attempts >= 5) showRetry();
+            else window.setTimeout(refreshTitles, Math.min(2000 * (2 ** attempts), 16000));
+          }
+        };
+        window.setTimeout(refreshTitles, 2000);
+      })();
+    </script>
+  {% endif %}
 {% endblock %}

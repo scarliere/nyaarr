@@ -19,6 +19,9 @@ GITHUB_REPO_URL = "https://github.com/scarliere/nyaarr"
 
 
 def system_status_model() -> dict[str, Any]:
+    from .maintenance import job_status_summary
+    from .metrics import metrics_snapshot
+
     uptime_seconds = max(int(time.monotonic() - APP_STARTED_MONOTONIC), 0)
     return {
         "disks": _disk_space_rows(),
@@ -31,6 +34,8 @@ def system_status_model() -> dict[str, Any]:
         "links": [
             {"label": "GitHub repository", "url": GITHUB_REPO_URL},
         ],
+        "jobs": job_status_summary(),
+        "metrics": metrics_snapshot(),
     }
 
 

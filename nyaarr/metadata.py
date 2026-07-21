@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import copy
+import concurrent.futures
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,6 +14,10 @@ from html import unescape
 from pathlib import Path
 from time import time
 from typing import Any
+
+from .anilist_client import AniListClientError, AniListRateLimitError, client as anilist_client
+from .metrics import timed
+from .models import AniListSnapshot, EpisodeAiringRecord
 
 
 ANILIST_URL = "https://graphql.anilist.co"
@@ -32,13 +39,50 @@ OFFLINE_DATABASE_PATHS = (
 _offline_database_cache: dict[str, Any] | None = None
 _offline_database_cache_path: Path | None = None
 _offline_database_cache_mtime: float | None = None
+_SEARCH_CACHE_TTL_SECONDS = 5 * 60
+_SEARCH_CACHE: dict[str, tuple[float, tuple[list[dict[str, Any]], list[str]]]] = {}
+_SEARCH_INFLIGHT: dict[str, concurrent.futures.Future[tuple[list[dict[str, Any]], list[str]]]] = {}
+_SEARCH_LOCK = threading.RLock()
 
 
 class MetadataProviderError(RuntimeError):
     pass
 
 
+class MetadataRateLimitError(MetadataProviderError):
+    def __init__(self, message: str, retry_after: int) -> None:
+        super().__init__(message)
+        self.retry_after = max(int(retry_after), 1)
+
+
 def search_anime_metadata(query: str) -> tuple[list[dict[str, Any]], list[str]]:
+    cache_key = query.strip().casefold()
+    now = time()
+    with _SEARCH_LOCK:
+        cached = _SEARCH_CACHE.get(cache_key)
+        if cached is not None and now - cached[0] < _SEARCH_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached[1])
+        future = _SEARCH_INFLIGHT.get(cache_key)
+        owns_request = future is None
+        if future is None:
+            future = concurrent.futures.Future()
+            _SEARCH_INFLIGHT[cache_key] = future
+    if owns_request:
+        try:
+            with timed('provider.metadata_search'):
+                result = _search_anime_metadata_uncached(query)
+            with _SEARCH_LOCK:
+                _SEARCH_CACHE[cache_key] = (now, copy.deepcopy(result))
+            future.set_result(result)
+        except Exception as exc:
+            future.set_exception(exc)
+        finally:
+            with _SEARCH_LOCK:
+                _SEARCH_INFLIGHT.pop(cache_key, None)
+    return copy.deepcopy(future.result(timeout=HTTP_TIMEOUT_SECONDS * 4 + 2))
+
+
+def _search_anime_metadata_uncached(query: str) -> tuple[list[dict[str, Any]], list[str]]:
     if not query:
         return [], []
 
@@ -171,7 +215,23 @@ ANILIST_MEDIA_FIELDS = """
   synonyms
   description(asHtml: false)
   seasonYear
+  season
+  format
   status
+  startDate {
+    year
+    month
+    day
+  }
+  endDate {
+    year
+    month
+    day
+  }
+  countryOfOrigin
+  source(version: 3)
+  isAdult
+  updatedAt
   episodes
   duration
   averageScore
@@ -209,7 +269,7 @@ def search_anilist(query: str) -> list[dict[str, Any]]:
         raise MetadataProviderError("AniList returned an API error.")
 
     media = data.get("data", {}).get("Page", {}).get("media", [])
-    return [_map_anilist_item(item) for item in media]
+    return [_map_anilist_item(item, preferred_title=query) for item in media]
 
 
 def search_anilist_by_id(anilist_id: Any) -> dict[str, Any] | None:
@@ -220,18 +280,108 @@ def search_anilist_by_id(anilist_id: Any) -> dict[str, Any] | None:
     if media_id <= 0:
         return None
 
+    snapshot = fetch_anilist_snapshot(media_id)
+    return snapshot.get("media") if isinstance(snapshot, dict) else None
+
+
+def fetch_anilist_snapshot(anilist_id: Any) -> AniListSnapshot | None:
+    try:
+        media_id = int(str(anilist_id).strip())
+    except (TypeError, ValueError):
+        return None
+    if media_id <= 0:
+        return None
     graphql = f"""
-    query ($id: Int) {{
+    query ($id: Int, $now: Int) {{
       Media(id: $id, type: ANIME) {{
 {ANILIST_MEDIA_FIELDS}
       }}
+      past: Page(page: 1, perPage: 25) {{
+        airingSchedules(
+          mediaId: $id, notYetAired: false,
+          airingAt_lesser: $now, sort: TIME_DESC
+        ) {{
+          episode
+          airingAt
+          mediaId
+        }}
+      }}
+      future: Page(page: 1, perPage: 25) {{
+        airingSchedules(
+          mediaId: $id, notYetAired: true,
+          airingAt_greater: $now, sort: TIME
+        ) {{
+          episode
+          airingAt
+          mediaId
+        }}
+      }}
     }}
     """
-    data = _post_json(ANILIST_URL, {"query": graphql, "variables": {"id": media_id}})
+    data = _post_json(
+        ANILIST_URL,
+        {"query": graphql, "variables": {"id": media_id, "now": int(time() // 300 * 300)}},
+    )
     if "errors" in data:
         raise MetadataProviderError("AniList returned an API error.")
-    media = data.get("data", {}).get("Media")
-    return _map_anilist_item(media) if isinstance(media, dict) else None
+    payload = data.get("data", {})
+    media = payload.get("Media")
+    if not isinstance(media, dict):
+        return None
+    return {
+        "media": _map_anilist_item(media),
+        "past_airings": _map_anilist_airings(payload.get("past", {}).get("airingSchedules", [])),
+        "future_airings": _map_anilist_airings(payload.get("future", {}).get("airingSchedules", [])),
+    }
+
+
+def fetch_anilist_airing_window(
+    media_ids: list[Any],
+    start_at: int,
+    end_at: int,
+    *,
+    page: int = 1,
+) -> tuple[list[EpisodeAiringRecord], bool]:
+    selected = sorted({int(value) for value in media_ids if str(value or "").isdigit() and int(value) > 0})
+    if not selected:
+        return [], False
+    graphql = """
+    query ($ids: [Int], $start: Int, $end: Int, $page: Int) {
+      Page(page: $page, perPage: 50) {
+        pageInfo {
+          hasNextPage
+        }
+        airingSchedules(
+          mediaId_in: $ids,
+          airingAt_greater: $start,
+          airingAt_lesser: $end,
+          sort: TIME
+        ) {
+          episode
+          airingAt
+          mediaId
+        }
+      }
+    }
+    """
+    data = _post_json(
+        ANILIST_URL,
+        {
+            "query": graphql,
+            "variables": {
+                "ids": selected,
+                "start": int(start_at),
+                "end": int(end_at),
+                "page": max(int(page), 1),
+            },
+        },
+    )
+    if "errors" in data:
+        raise MetadataProviderError("AniList returned an API error.")
+    page_payload = data.get("data", {}).get("Page", {})
+    records = _map_anilist_airings(page_payload.get("airingSchedules", []))
+    has_next = bool(page_payload.get("pageInfo", {}).get("hasNextPage"))
+    return records, has_next
 
 
 def search_anime_offline_database(query: str) -> list[dict[str, Any]]:
@@ -301,6 +451,16 @@ def search_tmdb(query: str) -> list[dict[str, Any]]:
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if url == ANILIST_URL:
+        try:
+            return anilist_client.execute(
+                str(payload.get("query") or ""),
+                payload.get("variables") if isinstance(payload.get("variables"), dict) else {},
+            )
+        except AniListRateLimitError as exc:
+            raise MetadataRateLimitError(str(exc), exc.retry_after) from exc
+        except AniListClientError as exc:
+            raise MetadataProviderError(str(exc)) from exc
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -338,7 +498,7 @@ def _open_json(request: urllib.request.Request, error_prefix: str) -> dict[str, 
         raise MetadataProviderError(f"{error_prefix}: {exc}.") from exc
 
 
-def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
+def _map_anilist_item(item: dict[str, Any], preferred_title: str = "") -> dict[str, Any]:
     title = item.get("title") or {}
     synonyms = item.get("synonyms", [])
     title_values = [
@@ -347,7 +507,7 @@ def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
         title.get("native"),
         *synonyms,
     ]
-    display_title = _anilist_display_title(title, synonyms)
+    display_title = _anilist_display_title(title, synonyms, preferred_title)
     studios = item.get("studios", {}).get("nodes", [])
     studio = studios[0]["name"] if studios else "Unknown"
     year = item.get("seasonYear")
@@ -356,6 +516,8 @@ def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
     episodes = item.get("episodes")
     description = _clean_description(item.get("description") or "")
     airing = _anilist_airing_fields(item.get("nextAiringEpisode"))
+    start_date = _anilist_fuzzy_date(item.get("startDate"))
+    end_date = _anilist_fuzzy_date(item.get("endDate"))
 
     return {
         "title": display_title,
@@ -377,17 +539,80 @@ def _map_anilist_item(item: dict[str, Any]) -> dict[str, Any]:
         "rating": f"{score}%" if score else "Unrated",
         "synopsis": description or "No synopsis available.",
         "poster": item.get("coverImage", {}).get("large") or "",
-        **airing,
+        "media_format": str(item.get("format") or "").replace("_", " ").title(),
+        "release_season": str(item.get("season") or "").title(),
+        "season_year": str(year) if year else "",
+        "start_date": start_date,
+        "end_date": end_date,
+        "source_material": str(item.get("source") or "").replace("_", " ").title(),
+        "country_of_origin": str(item.get("countryOfOrigin") or ""),
+        "is_adult": bool(item.get("isAdult")),
+        "anilist_updated_at": _unix_datetime(item.get("updatedAt")),
+        "air_date": start_date or airing.get("air_date", ""),
+        "next_airing_at": airing.get("next_airing_at", ""),
+        "airing_episode": airing.get("airing_episode", ""),
+        "airing_source": airing.get("airing_source", ""),
         "provider_ids": {
             "anilist": item.get("id"),
             "mal": item.get("idMal"),
         },
     }
 
-def _anilist_display_title(title: dict[str, Any], synonyms: list[Any]) -> str:
+
+def _map_anilist_airings(values: Any) -> list[EpisodeAiringRecord]:
+    if not isinstance(values, list):
+        return []
+    records: list[EpisodeAiringRecord] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        episode = value.get("episode")
+        airing_at = value.get("airingAt")
+        media_id = value.get("mediaId")
+        if not isinstance(episode, int) or episode <= 0 or not isinstance(airing_at, int) or airing_at <= 0:
+            continue
+        records.append(
+            {
+                "provider": "anilist",
+                "media_id": str(media_id or ""),
+                "episode": episode,
+                "airing_at": datetime.fromtimestamp(airing_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+                "precision": "exact",
+                "inference_source": "",
+                "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+    return records
+
+
+def _anilist_fuzzy_date(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    year = value.get("year")
+    month = value.get("month")
+    day = value.get("day")
+    if not isinstance(year, int) or year <= 0:
+        return ""
+    if not isinstance(month, int) or not isinstance(day, int):
+        return str(year)
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return str(year)
+
+
+def _unix_datetime(value: Any) -> str:
+    if not isinstance(value, int) or value <= 0:
+        return ""
+    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
+
+def _anilist_display_title(title: dict[str, Any], synonyms: list[Any], preferred_title: str = "") -> str:
     english = str(title.get("english") or "").strip()
     romaji = str(title.get("romaji") or "").strip()
     native = str(title.get("native") or "").strip()
+    preferred = _matching_anilist_title(preferred_title, [english, romaji, native, *synonyms])
+    if preferred:
+        return preferred
     if english:
         english_cour = _cour_marker_number(english)
         if english_cour is not None and _part_marker_number(english) is None:
@@ -397,6 +622,17 @@ def _anilist_display_title(title: dict[str, Any], synonyms: list[Any]) -> str:
                     return candidate
         return english
     return romaji or native or "Unknown title"
+
+
+def _matching_anilist_title(preferred_title: str, values: list[Any]) -> str:
+    preferred_key = _metadata_compare_text(preferred_title)
+    if not preferred_key:
+        return ""
+    for value in values:
+        candidate = str(value or "").strip()
+        if candidate and _metadata_compare_text(candidate) == preferred_key:
+            return candidate
+    return ""
 
 
 def _part_marker_number(value: str) -> int | None:
@@ -580,15 +816,15 @@ def _offline_database_path() -> Path | None:
         path = Path(configured_path)
         return path if path.exists() else None
 
-    cached_path = _ensure_offline_database_cache()
-    if cached_path is not None:
-        return cached_path
-
     for path in OFFLINE_DATABASE_PATHS:
         if path.exists():
             return path
 
     return None
+
+
+def refresh_offline_database_cache() -> Path | None:
+    return _ensure_offline_database_cache()
 
 
 def _ensure_offline_database_cache() -> Path | None:

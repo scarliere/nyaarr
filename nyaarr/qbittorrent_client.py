@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 from typing import Any
+
+from .metrics import timed
+
+
+_CLIENT_CACHE_TTL_SECONDS = 5 * 60
+_CLIENT_CACHE: dict[str, tuple[float, 'QBittorrentClient']] = {}
+_CLIENT_CACHE_LOCK = threading.RLock()
 
 
 class QBittorrentError(RuntimeError):
@@ -20,6 +30,7 @@ class QBittorrentClient:
         if not self.base_url:
             raise QBittorrentError("The configured qBittorrent host or port is invalid.")
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+        self._request_lock = threading.RLock()
 
     def login(self) -> None:
         username = str(self.settings.get("username") or "")
@@ -142,8 +153,10 @@ class QBittorrentClient:
             method=method,
         )
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
-                return response.read()
+            with timed('provider.qbittorrent'):
+                with self._request_lock:
+                    with self.opener.open(request, timeout=self.timeout) as response:
+                        return response.read()
         except urllib.error.HTTPError as exc:
             raise QBittorrentError(f"qBittorrent request failed: HTTP {exc.code}.") from exc
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
@@ -173,8 +186,10 @@ class QBittorrentClient:
             method="POST",
         )
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
-                return response.read()
+            with timed('provider.qbittorrent'):
+                with self._request_lock:
+                    with self.opener.open(request, timeout=self.timeout) as response:
+                        return response.read()
         except urllib.error.HTTPError as exc:
             raise QBittorrentError(f"qBittorrent request failed: HTTP {exc.code}.") from exc
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
@@ -203,9 +218,24 @@ def client_from_settings(settings: dict[str, Any], timeout: int = 10) -> QBittor
         raise QBittorrentError("No supported qBittorrent client is configured.")
     if not client_settings.get("enabled"):
         raise QBittorrentError("The configured qBittorrent client is disabled.")
-    client = QBittorrentClient(client_settings, timeout=timeout)
-    client.login()
-    return client
+    cache_key = hashlib.sha256(json.dumps(client_settings, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+    now = time.monotonic()
+    with _CLIENT_CACHE_LOCK:
+        cached = _CLIENT_CACHE.get(cache_key)
+        if cached is not None and now - cached[0] < _CLIENT_CACHE_TTL_SECONDS:
+            cached[1].timeout = timeout
+            _CLIENT_CACHE[cache_key] = (now, cached[1])
+            return cached[1]
+        client = QBittorrentClient(client_settings, timeout=timeout)
+        client.login()
+        _CLIENT_CACHE.clear()
+        _CLIENT_CACHE[cache_key] = (now, client)
+        return client
+
+
+def clear_client_cache() -> None:
+    with _CLIENT_CACHE_LOCK:
+        _CLIENT_CACHE.clear()
 
 
 def _bool_value(value: bool) -> str:

@@ -25,6 +25,29 @@
 
     <section class="settings-panel activity-panel">
       <div class="section-heading"><h2>Logs</h2><a class="button" href="{{ url_for('system_logs_csv') }}">Download CSV</a></div>
+      {% if not loading|default(false) %}
+        <div class="table-filter-bar" aria-label="Filter logs">
+          <label>
+            <span>Search</span>
+            <input type="search" placeholder="Anime, torrent, or message" data-log-search>
+          </label>
+          <label>
+            <span>Category</span>
+            <select data-log-category>
+              <option value="">All categories</option>
+              {% for category in events.rows|map(attribute='category')|unique|sort %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>Status</span>
+            <select data-log-status>
+              <option value="">All statuses</option>
+              {% for status in events.rows|map(attribute='status')|reject('equalto', '')|unique|sort %}<option value="{{ status }}">{{ status }}</option>{% endfor %}
+            </select>
+          </label>
+          <span class="table-filter-count" data-log-count aria-live="polite">{{ events.rows|length }} shown</span>
+        </div>
+      {% endif %}
       <div class="activity-table-wrap">
         <table class="activity-table system-logs-table">
           <thead>
@@ -54,13 +77,25 @@
               </tr>
             {% else %}
             {% for row in events.rows %}
-              <tr>
-                <td>{{ row.created_at }}</td>
-                <td>{{ row.category }}</td>
-                <td>{{ row.anime or '-' }}</td>
-                <td><span>{{ row.torrent or '-' }}</span></td>
-                <td>{{ row.status or '-' }}</td>
-                <td><strong>{{ row.message }}</strong></td>
+              <tr data-log-row data-log-search-value="{{ row.anime }} {{ row.torrent }} {{ row.message }}" data-log-category-value="{{ row.category }}" data-log-status-value="{{ row.status }}">
+                <td data-label="Date">{{ row.created_at }}</td>
+                <td data-label="Category">{{ row.category }}</td>
+                <td data-label="Anime" class="table-truncate" title="{{ row.anime }}">{{ row.anime or '-' }}</td>
+                <td data-label="Torrent" class="table-truncate" title="{{ row.torrent }}">{{ row.torrent or '-' }}</td>
+                <td data-label="Status">{{ row.status or '-' }}</td>
+                <td data-label="Message">
+                  <details class="log-row-detail">
+                    <summary title="{{ row.message }}">{{ row.message }}</summary>
+                    <div class="log-row-expanded">
+                      <p>{{ row.message }}</p>
+                      {% if row.torrent %}<p><strong>Torrent:</strong> {{ row.torrent }}</p>{% endif %}
+                      <div class="log-copy-actions">
+                        <button type="button" data-copy-value="{{ row.message }}">Copy message</button>
+                        {% if row.torrent %}<button type="button" data-copy-value="{{ row.torrent }}">Copy torrent</button>{% endif %}
+                      </div>
+                    </div>
+                  </details>
+                </td>
               </tr>
             {% else %}
               <tr><td colspan="6" class="activity-empty">No logs recorded yet.</td></tr>
@@ -71,4 +106,42 @@
       </div>
     </section>
   </section>
+  {% if not loading|default(false) %}
+    <script>
+      (() => {
+        const search = document.querySelector("[data-log-search]");
+        const category = document.querySelector("[data-log-category]");
+        const status = document.querySelector("[data-log-status]");
+        const count = document.querySelector("[data-log-count]");
+        const rows = Array.from(document.querySelectorAll("[data-log-row]"));
+        const applyFilters = () => {
+          const query = (search?.value || "").trim().toLocaleLowerCase();
+          const selectedCategory = category?.value || "";
+          const selectedStatus = status?.value || "";
+          let visible = 0;
+          rows.forEach((row) => {
+            const matches = (!query || row.dataset.logSearchValue.toLocaleLowerCase().includes(query))
+              && (!selectedCategory || row.dataset.logCategoryValue === selectedCategory)
+              && (!selectedStatus || row.dataset.logStatusValue === selectedStatus);
+            row.hidden = !matches;
+            if (matches) visible += 1;
+          });
+          if (count) count.textContent = `${visible} shown`;
+        };
+        [search, category, status].forEach((control) => {
+          control?.addEventListener(control === search ? "input" : "change", applyFilters);
+        });
+        document.querySelectorAll("[data-copy-value]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(button.dataset.copyValue || "");
+              button.textContent = "Copied";
+            } catch (error) {
+              button.textContent = "Copy failed";
+            }
+          });
+        });
+      })();
+    </script>
+  {% endif %}
 {% endblock %}

@@ -766,7 +766,7 @@ def test_sidebar_manual_selection_count_uses_visible_manual_rows(monkeypatch) ->
     monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
     monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
     monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
-    monkeypatch.setattr(app_state, "missing_settings_summary", lambda: {"count": 0})
+    monkeypatch.setattr(app_state, "missing_settings_summary", lambda database=None: {"count": 0})
 
     counts = app_state.sidebar_counts()
 
@@ -3852,3 +3852,46 @@ def test_delete_anime_removes_library_item_without_touching_files(monkeypatch) -
     assert message == "Anime removed from the library. Local files were not deleted."
     assert [item["library_id"] for item in database["anime"]] == ["anime-2"]
     assert writes == [database]
+
+
+def test_anilist_metadata_refresh_preserves_selected_alias_title(monkeypatch) -> None:
+    now = datetime(2026, 7, 6, 0, 0, tzinfo=timezone.utc).timestamp()
+    database = {"settings": {"root_folder": "C:/Anime"}, "events": [], "anime": []}
+    anime = {
+        "library_id": "AniList:188384",
+        "title": "Daemons of the Shadow Realm",
+        "original_title": "Yomi no Tsugai",
+        "year": "2026",
+        "season_number": 1,
+        "episodes": "Unknown",
+        "status": "Releasing",
+        "monitored": True,
+        "provider_ids": {"anilist": "188384"},
+        "source": "AniList",
+        "aliases": ["Daemons of the Shadow Realm", "Yomi no Tsugai"],
+        "torrent_search": {"candidates": [], "notices": []},
+    }
+    database["anime"].append(anime)
+    anilist = root_scan_metadata("Yomi no Tsugai")
+    anilist.update(
+        {
+            "title": "Yomi no Tsugai",
+            "original_title": "Yomi no Tsugai",
+            "source": "AniList",
+            "provider_ids": {"anilist": "188384"},
+            "aliases": ["Yomi no Tsugai", "Daemons do Reino das Sombras", "Daemons of the Shadow Realm"],
+            "provider_title": {"english": "", "romaji": "Yomi no Tsugai", "native": "Yomi native title"},
+        }
+    )
+
+    monkeypatch.setattr(app_state, "search_anilist_by_id", lambda anilist_id: anilist if anilist_id == "188384" else None)
+    monkeypatch.setattr(app_state, "_resolved_metadata_cache_store", lambda context, metadata: None)
+
+    changed = app_state._refresh_anilist_metadata(database, anime, now)
+
+    assert changed is True
+    assert anime["title"] == "Daemons of the Shadow Realm"
+    assert anime["original_title"] == "Yomi no Tsugai"
+    assert anime["source"] == "AniList"
+    assert anime["provider_ids"]["anilist"] == "188384"
+    assert anime["torrent_search"]["query"] == "Daemons of the Shadow Realm"

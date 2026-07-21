@@ -11,6 +11,8 @@ Current sections:
 - `architecture/resource-management.md`: Process, cache, retention, and scan resource guardrails.
 - `architecture/user-data.md`: Client-local JSON user data storage.
 - `features/add-anime.md`: Add Anime search flow and UI behavior.
+- `features/ui-density-and-actions.md`: Compact desktop tables, progressive actions, responsive behavior, and recovery states.
 - `features/settings-root-folder.md`: Settings root folder configuration and local import scan.
 - `features/torrent-finder.md`: Add-to-library and nyaa.si RSS torrent candidate process.
 - `integrations/metadata-providers.md`: Metadata provider order, configuration, and normalized fields.
+- `integrations/jikan-episode-titles.md`: Best-effort cached episode-title enrichment and rate limits.
