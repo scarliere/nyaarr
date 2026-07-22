@@ -8,6 +8,15 @@ Nyaarr is a Python Flask app that aims to provide a Sonarr-like experience for a
 - App factory: `nyaarr/__init__.py:create_app`
 - Default bind host: `127.0.0.1`, configurable with `NYAARR_HOST`
 - Default local port: `1269`, configurable with `NYAARR_PORT`
+
+Before importing Flask or application modules, `main.py` fingerprints
+`requirements.txt`, the active Python executable, and its version. A changed
+fingerprint runs `python -m pip install -r requirements.txt` and records success
+in `data/cache/requirements-installed.json`. Pip receives an argument list with
+resolved paths, so repository and Python locations containing spaces are
+supported. Failed installs stop startup and retry next launch. Set
+`NYAARR_SKIP_REQUIREMENTS_CHECK=1` only when deployment tooling owns dependency
+installation.
 - Local dependency environment: `.venv`
 
 `main.py` starts Flask with `use_reloader=False` so background preview launches do not create duplicate processes. The Windows launcher stops any existing Python process running this project's `main.py` or tray helper before starting a fresh Nyaarr instance, opens `http://127.0.0.1:1269` by default, and writes startup logs to `data/logs/`. It passes the Flask and tray script paths as explicitly quoted process arguments so installs under folders with spaces keep working. It also starts `nyaarr/tray.py`, a Windows notification-area icon with `Open Nyaarr` and `Terminate Nyaarr` actions; terminating from the tray stops the Flask process tree through hidden Windows process-launch flags so no transient command prompt appears, then removes the icon. Set `NYAARR_PUBLIC_URL` to open a Cloudflare Tunnel URL instead. Set `NYAARR_HOST=0.0.0.0` only when the Flask process itself must accept LAN connections directly; Cloudflared running on the same PC can target `http://127.0.0.1:1269`.

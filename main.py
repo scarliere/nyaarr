@@ -2,6 +2,10 @@ import os
 import sys
 from pathlib import Path
 
+from startup_requirements import ensure_requirements
+
+ensure_requirements(Path(__file__).resolve().parent)
+
 from nyaarr import create_app
 from nyaarr.single_instance import SingleInstanceError, SingleInstanceLock
 

@@ -44,6 +44,11 @@ python -m venv .venv
 
 Then open `http://127.0.0.1:1269`.
 
+Every launch checks whether `requirements.txt` or the active Python environment
+changed and installs requirements before importing the app when needed. Paths
+containing spaces are supported. Set `NYAARR_SKIP_REQUIREMENTS_CHECK=1` only when
+dependencies are managed externally.
+
 ## Configuration
 
 Inside the app, configure:
