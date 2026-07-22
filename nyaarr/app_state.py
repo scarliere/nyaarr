@@ -3393,11 +3393,18 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
         if not isinstance(anime, dict):
             continue
         anime_changed = False
-        if _attach_existing_root_episode_files(database, anime):
+        queue_items = _download_queue_items(anime)
+        has_refreshable_queue = any(_queue_status_needs_refresh(queue) for queue in queue_items)
+        storage_changed = False
+        if has_refreshable_queue:
+            storage_changed = _refresh_existing_local_episode_files(anime)
+            if not storage_changed:
+                storage_changed = _attach_existing_root_episode_files(database, anime)
+        if storage_changed:
             _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
             changed = True
             anime_changed = True
-        for queue in _download_queue_items(anime):
+        for queue in queue_items:
             if _reconcile_locally_satisfied_queue(anime, queue):
                 changed = True
                 anime_changed = True
@@ -5547,6 +5554,22 @@ def _attach_existing_root_episode_files(database: dict[str, Any], anime: dict[st
     child, media_files = matches_with_media[0]
     anime["local_path"] = str(child.resolve())
     anime["episode_files"] = [str(path.resolve()) for path in media_files]
+    _refresh_media_tag(anime)
+    return True
+
+
+def _refresh_existing_local_episode_files(anime: dict[str, Any]) -> bool:
+    local_path = Path(str(anime.get("local_path") or "").strip())
+    if not str(anime.get("local_path") or "").strip() or not local_path.exists() or not local_path.is_dir():
+        return False
+    discovered = sorted((str(path.resolve()) for path in _media_files(local_path)), key=str.casefold)
+    current = sorted(
+        (str(Path(path).resolve()) for path in anime.get("episode_files", []) if isinstance(path, str)),
+        key=str.casefold,
+    )
+    if discovered == current:
+        return False
+    anime["episode_files"] = discovered
     _refresh_media_tag(anime)
     return True
 

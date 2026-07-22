@@ -2910,6 +2910,56 @@ def test_queue_refresh_recovers_downloaded_folder_and_card_when_local_path_is_mi
     assert app_state._activity_queued_rows(database) == []
 
 
+def test_queue_refresh_rescans_existing_folder_before_reporting_episode_status(monkeypatch, tmp_path) -> None:
+    show = tmp_path / "Yomi no Tsugai"
+    show.mkdir()
+    episode_one = show / "[SubsPlease] Yomi no Tsugai - 01 [1080p].mkv"
+    episode_two = show / "[SubsPlease] Yomi no Tsugai - 02 [1080p].mkv"
+    episode_one.write_bytes(b"episode-1")
+    episode_two.write_bytes(b"episode-2")
+
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    anime.update(
+        {
+            "title": "Yomi no Tsugai",
+            "episodes": "2",
+            "local_path": str(show),
+            "episode_files": [str(episode_one.resolve())],
+            "completion": {
+                "expected_episodes": 2,
+                "local_episodes": 1,
+                "progress_target": 2,
+                "missing_episodes": 1,
+            },
+            "download_queue": {
+                "status": "downloading",
+                "hash": "yomi-episode-2",
+                "episode": 2,
+                "wanted_episodes": [2],
+                "progress": 87,
+            },
+        }
+    )
+    anime["download_queues"] = [anime["download_queue"]]
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda item, force=False: "skipped")
+    monkeypatch.setattr(
+        app_state,
+        "client_from_settings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local rescan should avoid a client call")),
+    )
+
+    changed = app_state._refresh_download_queue(database)
+
+    assert changed is True
+    assert anime["episode_files"] == [str(episode_one.resolve()), str(episode_two.resolve())]
+    assert anime["completion"]["local_episodes"] == 2
+    assert anime["completion"]["missing_episodes"] == 0
+    assert anime["download_queue"]["status"] == "imported"
+    assert [row["status"] for row in app_state._anime_episode_rows(anime)] == ["Downloaded", "Downloaded"]
+    assert app_state._activity_queued_rows(database) == []
+
+
 def test_completed_torrent_import_skips_sample_file(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
     folder = root / "Download"
