@@ -3393,6 +3393,10 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
         if not isinstance(anime, dict):
             continue
         anime_changed = False
+        if _attach_existing_root_episode_files(database, anime):
+            _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+            changed = True
+            anime_changed = True
         for queue in _download_queue_items(anime):
             if _reconcile_locally_satisfied_queue(anime, queue):
                 changed = True
@@ -5506,10 +5510,13 @@ def _media_files_for_anime_folder(anime: dict[str, Any], folder: Path) -> list[P
     return media_files
 
 
-def _attach_existing_root_episode_files(database: dict[str, Any], anime: dict[str, Any]) -> None:
+def _attach_existing_root_episode_files(database: dict[str, Any], anime: dict[str, Any]) -> bool:
+    existing_path = str(anime.get("local_path") or "").strip()
+    if existing_path and Path(existing_path).exists():
+        return False
     root_folder = Path(str(database.get("settings", {}).get("root_folder") or "").strip())
     if not root_folder.exists() or not root_folder.is_dir():
-        return
+        return False
 
     candidate_titles = [
         str(anime.get("title") or ""),
@@ -5517,19 +5524,31 @@ def _attach_existing_root_episode_files(database: dict[str, Any], anime: dict[st
     ]
     normalized_titles = {re.sub(r"[^a-z0-9]+", "", title.casefold()) for title in candidate_titles if title.strip()}
     if not normalized_titles:
-        return
+        return False
 
-    for child in root_folder.iterdir():
-        if not child.is_dir():
-            continue
-        if re.sub(r"[^a-z0-9]+", "", child.name.casefold()) not in normalized_titles:
-            continue
-        media_files = _media_files(child)
-        if media_files:
-            anime["local_path"] = str(child.resolve())
-            anime["episode_files"] = [str(path.resolve()) for path in media_files]
-            _refresh_media_tag(anime)
-        return
+    children = [child for child in root_folder.iterdir() if child.is_dir()]
+    exact_matches = [
+        child
+        for child in children
+        if re.sub(r"[^a-z0-9]+", "", child.name.casefold()) in normalized_titles
+    ]
+    matches = exact_matches
+    if not matches:
+        matches = [
+            child
+            for child in children
+            if any(torrent_title_matches(title, child.name) for title in candidate_titles if title.strip())
+        ]
+    matches_with_media = [(child, _media_files(child)) for child in matches]
+    matches_with_media = [(child, files) for child, files in matches_with_media if files]
+    if len(matches_with_media) != 1:
+        return False
+
+    child, media_files = matches_with_media[0]
+    anime["local_path"] = str(child.resolve())
+    anime["episode_files"] = [str(path.resolve()) for path in media_files]
+    _refresh_media_tag(anime)
+    return True
 
 
 def _completion_payload(

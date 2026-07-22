@@ -2771,6 +2771,145 @@ def test_completed_episode_import_uses_existing_local_folder(monkeypatch, tmp_pa
     assert str(destination.resolve()) in anime["episode_files"]
 
 
+def test_two_pass_episode_dispatch_completion_import_and_ui_state(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Anime"
+    root.mkdir()
+    database = auto_dispatch_database([auto_candidate(episode=1)])
+    database["settings"]["root_folder"] = str(root)
+    anime = database["anime"][0]
+    anime["episodes"] = "2"
+    anime["completion"] = {
+        "expected_episodes": 2,
+        "local_episodes": 0,
+        "progress_target": 2,
+        "missing_episodes": 2,
+    }
+    client = FakeDownloadClient()
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda item, force=False: "skipped")
+    monkeypatch.setattr(app_state, "_sync_anime_nfo_file", lambda item: False)
+
+    imported_paths = []
+    for episode in (1, 2):
+        candidate = auto_candidate(episode=episode)
+        anime["torrent_search"] = {"candidates": [candidate], "notices": []}
+
+        app_state._maybe_dispatch_torrent(database, anime)
+
+        queue = next(
+            queue
+            for queue in app_state._download_queue_items(anime)
+            if queue.get("episode") == episode
+            and queue.get("status") in {"submitted", "queued", "pending_safety"}
+        )
+        assert queue["hash"] == str(candidate["infohash"]).casefold()
+        assert queue["status"] == "pending_safety"
+        assert queue["safety_status"] == "pending"
+        assert client.urls[-1] == candidate["torrent_url"]
+
+        anime_folder = root / "Petals of Reincarnation"
+        source_folder = root if episode == 1 else anime_folder
+        source_folder.mkdir(parents=True, exist_ok=True)
+        source = source_folder / f"[SteadySubs] Petals of Reincarnation - {episode:02d} [1080p].mkv"
+        source.write_bytes(f"episode-{episode}".encode())
+        torrent_hash = str(candidate["infohash"]).casefold()
+        client._files_by_hash[torrent_hash] = [{"index": 0, "name": source.name}]
+        client._torrents.append(
+            {
+                "hash": torrent_hash,
+                "name": source.name,
+                "progress": 1,
+                "state": "uploading",
+                "content_path": str(source),
+                "save_path": str(source_folder),
+            }
+        )
+
+        changed = app_state._refresh_download_queue(database)
+
+        destination = anime_folder / source.name
+        imported_paths.append(str(destination.resolve()))
+        assert changed is True
+        assert queue["status"] == "imported"
+        assert queue["import_status"] == "imported"
+        assert queue["progress"] == 100
+        assert destination.exists()
+        assert destination.read_bytes() == f"episode-{episode}".encode()
+        assert source.exists()
+        assert anime["local_path"] == str(anime_folder.resolve())
+        assert str(destination.resolve()) in anime["episode_files"]
+
+    app_state._refresh_library_state(anime, root_folder_configured=True)
+    detail_rows = app_state._anime_episode_rows(anime)
+    queued_rows = app_state._activity_queued_rows(database)
+    history_rows = app_state._activity_history_rows(database)
+
+    assert anime["episode_files"] == imported_paths
+    assert anime["completion"]["local_episodes"] == 2
+    assert anime["completion"]["missing_episodes"] == 0
+    assert [row["status"] for row in detail_rows] == ["Downloaded", "Downloaded"]
+    assert queued_rows == []
+    assert len(history_rows) == 2
+    assert {row["episode"] for row in history_rows} == {"1", "2"}
+    assert all(row["status"] == "imported" and row["progress"] == 100 for row in history_rows)
+
+
+def test_queue_refresh_recovers_downloaded_folder_and_card_when_local_path_is_missing(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Anime"
+    show = root / "Yomi no Tsugai [1080p]"
+    show.mkdir(parents=True)
+    files = []
+    for episode in (1, 2):
+        media = show / f"[SubsPlease] Yomi no Tsugai - {episode:02d} [1080p].mkv"
+        media.write_bytes(f"episode-{episode}".encode())
+        files.append(str(media.resolve()))
+
+    database = auto_dispatch_database([])
+    database["settings"]["root_folder"] = str(root)
+    anime = database["anime"][0]
+    anime.update(
+        {
+            "title": "Daemons of the Shadow Realm",
+            "original_title": "Yomi no Tsugai",
+            "episodes": "2",
+            "local_path": "",
+            "episode_files": [],
+            "completion": {
+                "expected_episodes": 2,
+                "local_episodes": 0,
+                "progress_target": 2,
+                "missing_episodes": 2,
+            },
+            "download_queue": {
+                "status": "downloading",
+                "hash": "yomi-episode-2",
+                "episode": 2,
+                "wanted_episodes": [2],
+                "progress": 87,
+            },
+        }
+    )
+    anime["download_queues"] = [anime["download_queue"]]
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda item, force=False: "skipped")
+    monkeypatch.setattr(
+        app_state,
+        "client_from_settings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local recovery should avoid a client call")),
+    )
+
+    changed = app_state._refresh_download_queue(database)
+
+    assert changed is True
+    assert anime["local_path"] == str(show.resolve())
+    assert anime["episode_files"] == files
+    assert anime["completion"]["local_episodes"] == 2
+    assert anime["completion"]["missing_episodes"] == 0
+    assert anime["download_queue"]["status"] == "imported"
+    assert anime["download_queue"]["progress"] == 100
+    assert [row["status"] for row in app_state._anime_episode_rows(anime)] == ["Downloaded", "Downloaded"]
+    assert app_state._activity_queued_rows(database) == []
+
+
 def test_completed_torrent_import_skips_sample_file(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
     folder = root / "Download"

@@ -10,6 +10,7 @@ The Activity page shows Nyaarr download queue records grouped into queued, histo
 - Queued Activity polling skips unchanged payloads and updates existing table rows in place when row identity is stable.
 - Activity page renders and `/activity/queued/data` now use stored queue state only; live qBittorrent reconciliation runs in background maintenance so page loads do not block on the download client.
 - Active qBittorrent queue state is reconciled by a dedicated background job every 5 seconds by default, matching the queued-page polling cadence. Configure this independently with `NYAARR_DOWNLOAD_QUEUE_REFRESH_INTERVAL_SECONDS`; broader filesystem, Nyaa, and metadata maintenance remains on its existing interval.
+- Queue reconciliation also repairs a missing or invalid anime `local_path` by conservatively matching exactly one media-containing folder under the configured root against the anime title or original title. Once attached, episode files, card completion, episode rows, and locally satisfied queue records are updated in the same pass.
 - Saving an anime as unmonitored clears its active queued/downloading/paused/stalled/error/pending/flagged queue records and manual torrent selection state while preserving completed/imported history. Activity Queued also skips unmonitored anime so wanted placeholders do not reappear. The unmonitored preference is sticky across add/update/root-scan refreshes; background torrent search and automatic dispatch stay paused until the user explicitly re-enables Monitored.
 
 ## Important Files
