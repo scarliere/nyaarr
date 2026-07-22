@@ -128,6 +128,12 @@ PERIODIC_MAINTENANCE_INTERVAL_SECONDS = int(os.environ.get("NYAARR_PERIODIC_MAIN
 TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS", str(PERIODIC_MAINTENANCE_INTERVAL_SECONDS)))
 TORRENT_DISPATCH_RETRY_SECONDS = int(os.environ.get("NYAARR_TORRENT_DISPATCH_RETRY_SECONDS", str(5 * 60)))
 MAX_TORRENT_SEARCHES_PER_TICK = int(os.environ.get("NYAARR_MAX_TORRENT_SEARCHES_PER_TICK", "2"))
+MAX_TORRENT_DISPATCHES_PER_ANIME_TICK = max(
+    1, int(os.environ.get("NYAARR_MAX_TORRENT_DISPATCHES_PER_ANIME_TICK", "4"))
+)
+MAX_TORRENT_DISPATCH_ANIME_PER_TICK = max(
+    1, int(os.environ.get("NYAARR_MAX_TORRENT_DISPATCH_ANIME_PER_TICK", "2"))
+)
 MAX_AIRING_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_AIRING_REFRESHES_PER_TICK", "10"))
 MAX_POSTER_REPAIRS_PER_TICK = int(os.environ.get("NYAARR_MAX_POSTER_REPAIRS_PER_TICK", "3"))
 MAX_ANILIST_METADATA_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_ANILIST_METADATA_REFRESHES_PER_TICK", "3"))
@@ -439,6 +445,7 @@ def run_startup_download_status_check() -> dict[str, Any]:
         "status": "ok",
         "queue_refreshed": False,
         "library_refreshed": False,
+        "dispatch_attempts": 0,
         "last_run_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -455,13 +462,25 @@ def run_startup_download_status_check() -> dict[str, Any]:
             summary["library_refreshed"] = True
             changed = True
 
+        now = time.time()
+        for anime in database.get("anime", []):
+            if summary["dispatch_attempts"] >= MAX_TORRENT_DISPATCH_ANIME_PER_TICK:
+                break
+            if not isinstance(anime, dict) or not _should_attempt_periodic_dispatch(database, anime, now):
+                continue
+            anime["torrent_dispatch_attempted_at"] = datetime.now(timezone.utc).isoformat()
+            _maybe_dispatch_torrent(database, anime)
+            summary["dispatch_attempts"] += 1
+            changed = True
+
         if changed:
             _record_event(
                 database,
                 "system",
                 "Startup torrent status check completed: "
                 f"queue_refreshed={summary['queue_refreshed']}, "
-                f"library_refreshed={summary['library_refreshed']}."
+                f"library_refreshed={summary['library_refreshed']}, "
+                f"dispatch_attempts={summary['dispatch_attempts']}."
             )
             _write_user_database(database)
     finally:
@@ -534,7 +553,9 @@ def run_periodic_maintenance_tick(
                     changed = True
             elif not include_external and _should_refresh_torrent_search(anime, now):
                 summary["torrent_searches_deferred"] += 1
-            if include_external and _should_attempt_periodic_dispatch(database, anime, now):
+            if (include_local or include_external) and _should_attempt_periodic_dispatch(database, anime, now):
+                if summary["dispatch_attempts"] >= MAX_TORRENT_DISPATCH_ANIME_PER_TICK:
+                    continue
                 anime["torrent_dispatch_attempted_at"] = datetime.now(timezone.utc).isoformat()
                 _maybe_dispatch_torrent(database, anime)
                 summary["dispatch_attempts"] += 1
@@ -1003,6 +1024,8 @@ def _poster_url_accessible(url: str) -> bool:
 
 
 def _recent_dispatch_attempt(anime: dict[str, Any], now: float) -> bool:
+    if anime.get("torrent_dispatch_backlog"):
+        return False
     attempted_at = _parse_checked_at(anime.get("torrent_dispatch_attempted_at"))
     return attempted_at is not None and now - attempted_at < TORRENT_DISPATCH_RETRY_SECONDS
 
@@ -2702,7 +2725,7 @@ def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: 
             rows.append(_activity_row(anime, queue, include_completed=False))
         for episode in _missing_episode_numbers(anime):
             if episode not in active_episodes:
-                rows.append(_activity_missing_episode_row(anime, episode))
+                rows.append(_activity_missing_episode_row(anime, episode, _resolved_episode_candidate(database, anime, episode)))
     return sorted(rows, key=lambda row: (row["sort_date"], row["anime"], row["episode"]), reverse=True)
 
 
@@ -2736,19 +2759,39 @@ def _activity_blocked_rows(database: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: row["sort_date"], reverse=True)
 
 
-def _activity_missing_episode_row(anime: dict[str, Any], episode: int) -> dict[str, Any]:
+def _resolved_episode_candidate(database: dict[str, Any], anime: dict[str, Any], episode: int) -> dict[str, Any] | None:
+    torrent_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
+    candidates = torrent_search.get("candidates") if isinstance(torrent_search.get("candidates"), list) else []
+    usable = [
+        candidate
+        for candidate in _filter_ignored_torrent_candidates(database, candidates)
+        if candidate.get("torrent_url")
+        and candidate.get("release_kind") == "episode"
+        and _int_value(candidate.get("episode")) == episode
+    ]
+    if not usable:
+        return None
+    return max(usable, key=lambda candidate: _candidate_selection_sort_key(candidate, database, anime))
+
+
+def _activity_missing_episode_row(
+    anime: dict[str, Any], episode: int, candidate: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    resolved = isinstance(candidate, dict)
     return {
         "anime": str(anime.get("title") or anime.get("original_title") or "Unknown"),
         "episode": str(episode),
-        "date_added": "Wanted",
+        "date_added": "Resolved" if resolved else "Wanted",
         "sort_date": "",
         "resolution": _activity_resolution_label(anime, {}),
-        "time_left": "Waiting for torrent",
+        "time_left": "Dispatch pending" if resolved else "Waiting for torrent",
         "progress": 0,
         "date_completed": "",
         "sort_completed": "",
-        "title": "No torrent selected yet",
-        "status": "wanted",
+        "title": str(candidate.get("title") or "Resolved torrent") if resolved else "No torrent selected yet",
+        "status": "resolved" if resolved else "wanted",
+        "status_label": "Resolved · dispatch pending" if resolved else "Waiting for torrent",
+        "status_tone": "resolved" if resolved else "wanted",
         "library_id": str(anime.get("library_id") or ""),
         "can_resolve": False,
     }
@@ -2763,6 +2806,8 @@ def _activity_row(
     progress = _activity_progress(torrent)
     added_value = torrent.get("queued_at") or torrent.get("ignored_at") or torrent.get("rejected_at") or ""
     completed_value = torrent.get("completed_at") or ""
+    status = str(torrent.get("status") or ("blocked" if blocked else ""))
+    status_label, status_tone = _activity_status_pill(status)
     return {
         "anime": str(torrent.get("anime_title") or anime.get("title") or anime.get("original_title") or "Unknown"),
         "episode": _activity_episode_label(torrent),
@@ -2774,12 +2819,31 @@ def _activity_row(
         "date_completed": _display_datetime_label(completed_value) if include_completed else "",
         "sort_completed": str(completed_value),
         "title": str(torrent.get("title") or ""),
-        "status": str(torrent.get("status") or ("blocked" if blocked else "")),
+        "status": status,
+        "status_label": status_label,
+        "status_tone": status_tone,
         "library_id": str(anime.get("library_id") or torrent.get("anime_library_id") or ""),
         "can_resolve": not blocked and torrent.get("status") == "flagged",
         "can_unblock": blocked and bool(torrent.get("key")),
         "ignore_key": str(torrent.get("key") or ""),
     }
+
+
+def _activity_status_pill(status: str) -> tuple[str, str]:
+    labels = {
+        "queued": ("Checking client", "checking"),
+        "pending_safety": ("Safety check", "checking"),
+        "downloading": ("Downloading", "downloading"),
+        "paused": ("Paused", "paused"),
+        "stalled": ("Stalled", "stalled"),
+        "error": ("Client error", "error"),
+        "flagged": ("Needs review", "error"),
+        "missing": ("Dispatch retry", "resolved"),
+        "completed": ("Completed", "complete"),
+        "imported": ("Imported", "complete"),
+        "blocked": ("Blocked", "error"),
+    }
+    return labels.get(status, (status.replace("_", " ").title() or "Unknown", "wanted"))
 
 
 def _activity_episode_label(torrent: dict[str, Any]) -> str:
@@ -2901,6 +2965,10 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
             _append_torrent_notice(anime, "No download was queued because no suitable torrent candidate matched the selected resolution.")
         return
 
+    deferred_release_count = max(0, len(releases) - MAX_TORRENT_DISPATCHES_PER_ANIME_TICK)
+    releases = releases[:MAX_TORRENT_DISPATCHES_PER_ANIME_TICK]
+    anime["torrent_dispatch_backlog"] = deferred_release_count > 0
+
     existing_queues = _download_queue_items(anime)
     existing_keys = _active_queue_identity_keys(anime)
     queued_episodes = _queued_episode_numbers(anime)
@@ -2930,6 +2998,7 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
                 tags=tags,
                 paused=True,
                 root_folder=release.get("release_kind") != "episode",
+                expected_infohash=str(release.get("infohash") or ""),
             )
             if not str(release.get("infohash") or "").strip():
                 discovered_hash = _new_client_hash(client, category, known_client_hashes)
@@ -2937,6 +3006,7 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
                     release["infohash"] = discovered_hash
                     known_client_hashes.add(discovered_hash)
             queue = _download_queue_from_release(release, anime, client_settings, dispatch_save_path, missing_episodes)
+            _inspect_and_start_new_queue(database, client, anime, queue)
             _set_release_group_lock_from_release(anime, release, 'queued')
             queues.append(queue)
             if release_key:
@@ -2958,6 +3028,11 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
     anime["torrent_manual_selection"] = {"required": False}
     if cleaned:
         _append_torrent_notice(anime, f"Cleaned up {cleaned} individual episode torrent(s) now covered by a batch.")
+    if deferred_release_count:
+        _append_torrent_notice(
+            anime,
+            f"Deferred {deferred_release_count} resolved torrent(s) to the next local maintenance pass to protect qBittorrent.",
+        )
     if added == 1:
         message = f"Sent {releases[0].get('title', 'selected torrent')} to qBittorrent."
         _append_torrent_notice(anime, message)
@@ -2966,6 +3041,46 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
         message = f"Sent {added} missing episode torrents to qBittorrent."
         _append_torrent_notice(anime, message)
         _record_event(database, "torrent", message, anime)
+
+
+def _inspect_and_start_new_queue(
+    database: dict[str, Any], client: Any, anime: dict[str, Any], queue: dict[str, Any]
+) -> None:
+    torrent_hash = str(queue.get("hash") or "").strip().casefold()
+    if not torrent_hash:
+        queue["status"] = "pending_safety"
+        queue["message"] = "Waiting for qBittorrent hash before safety inspection."
+        return
+
+    safety_result = _inspect_torrent_safety(client, torrent_hash, queue)
+    if safety_result == "waiting":
+        queue["status"] = "pending_safety"
+        return
+    if safety_result == "flagged":
+        queue["status"] = "flagged"
+        _record_event(database, "torrent", queue["message"], anime, queue)
+        return
+
+    if queue.get("select_batch_files") and queue.get("file_selection_status") != "applied":
+        _apply_batch_file_selection(client, torrent_hash, queue)
+        if queue.get("file_selection_status") != "applied":
+            queue["status"] = "pending_safety"
+            return
+
+    if queue.get("user_add_paused"):
+        queue["status"] = "paused"
+        queue["message"] = "Torrent passed safety inspection and remains paused by setting."
+        return
+
+    try:
+        client.resume(torrent_hash)
+    except QBittorrentError as exc:
+        queue["status"] = "error"
+        queue["message"] = f"Torrent passed safety inspection, but qBittorrent start failed: {exc}"
+        _record_event(database, "torrent", queue["message"], anime, queue)
+        return
+    queue["status"] = "queued"
+    queue["message"] = "Torrent passed safety inspection and was started immediately."
 
 
 def _current_client_hashes(client: Any, category: str) -> set[str]:
@@ -7092,6 +7207,8 @@ def _calendar_days(
         for anime in library
         if _provider_id_value(anime, "anilist")
     }
+
+
     scheduled_identities: set[tuple[str, int]] = set()
     for record in schedule_records or []:
         anime = anime_by_media_id.get(str(record.get("media_id") or ""))

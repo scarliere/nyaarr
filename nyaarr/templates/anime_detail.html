@@ -1,9 +1,29 @@
-{% extends "base.html" %}
+{% extends layout_template|default("base.html") %}
 
 {% block title %}Nyaarr - {{ anime.title }}{% endblock %}
 
 {% block content %}
-  <section class="anime-detail-workspace">
+  {% if loading|default(false) %}
+    <section class="anime-detail-workspace anime-detail-loading" aria-live="polite">
+      <div class="anime-detail-loading-hero loading-state">
+        <div class="anime-detail-loading-poster" aria-hidden="true"></div>
+        <div>
+          <p class="eyebrow">Anime</p>
+          <h1>Loading anime details</h1>
+          <p>Preparing stored metadata and episode state.</p>
+        </div>
+      </div>
+      <section class="anime-detail-panel table-loading-card">
+        <strong>Loading episodes</strong>
+        <div class="table-loading-lines" aria-hidden="true">
+          <i class="table-loading-line"></i>
+          <i class="table-loading-line"></i>
+          <i class="table-loading-line"></i>
+        </div>
+      </section>
+    </section>
+  {% else %}
+  <section class="anime-detail-workspace" data-page-title="Nyaarr - {{ anime.title }}">
     <div class="anime-detail-hero">
       <div class="anime-detail-poster">
         {% if anime.poster %}
@@ -163,6 +183,7 @@
       {% endif %}
     </section>
   </section>
+  {% endif %}
   {% if anime.episode_titles_pending %}
     <script>
       (() => {

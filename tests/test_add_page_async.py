@@ -367,6 +367,7 @@ def test_shared_list_pages_use_session_cache_before_refetching() -> None:
 
     assert 'nyaarr:list-cache:v1:' in base
     assert 'window.sessionStorage' in base
+    assert 'const maxEntries = 24;' in base
     assert 'if (cachedPage.fresh) return;' in base
     assert 'nyaarrListCache.clear();' in base
     assert 'const cacheKey = `nyaarr:list-cache:v1:${bootstrapUrl}`;' in base
@@ -505,7 +506,7 @@ def test_anime_detail_episode_manual_link_route_redirects(monkeypatch) -> None:
     assert calls == [("anime-1", "magnet:?xt=urn:btih:ABCDEF1234567890ABCDEF1234567890ABCDEF12", "120")]
     assert "detail_saved=1" in response.headers["Location"]
 
-def test_anime_detail_page_renders_model(monkeypatch) -> None:
+def test_anime_detail_page_loads_model_asynchronously(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
     monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
     monkeypatch.setattr(
@@ -543,7 +544,15 @@ def test_anime_detail_page_renders_model(monkeypatch) -> None:
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
 
-    response = _authenticated_client(app).get("/anime/anime-1")
+    client = _authenticated_client(app)
+    shell = client.get("/anime/anime-1")
+
+    assert shell.status_code == 200
+    assert b"Loading anime details" in shell.data
+    assert b'data-async-page-url="/anime/anime-1/data-page"' in shell.data
+    assert b"Petals of Reincarnation" not in shell.data
+
+    response = client.get("/anime/anime-1/data-page")
 
     assert response.status_code == 200
     assert b"Petals of Reincarnation" in response.data

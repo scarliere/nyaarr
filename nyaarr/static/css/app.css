@@ -2089,6 +2089,30 @@ h1 {
   }
 }
 
+.activity-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 9px;
+  border: 1px solid #405164;
+  border-radius: 999px;
+  color: #d7e1eb;
+  background: #1a2430;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.activity-status-pill.resolved,
+.activity-status-pill.checking { border-color: #27638f; background: #15334a; color: #9dd8ff; }
+.activity-status-pill.downloading,
+.activity-status-pill.complete { border-color: #287557; background: #173e30; color: #9ce8c3; }
+.activity-status-pill.paused,
+.activity-status-pill.wanted { border-color: #675c34; background: #37311c; color: #ead98d; }
+.activity-status-pill.stalled,
+.activity-status-pill.error { border-color: #81424b; background: #431f27; color: #ffadb8; }
+
 /* Shared UI density and recovery primitives. */
 
 :where(a, button, input, select, textarea, summary):focus-visible {
@@ -3193,6 +3217,57 @@ h1 {
 
   .activity-progress-cell {
     grid-template-columns: minmax(0, 1fr) 42px;
+  }
+}
+
+.anime-detail-loading-hero {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+  min-height: 260px;
+  padding: 24px;
+}
+
+.anime-detail-loading-poster {
+  width: 180px;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #17202b, #22303f, #17202b);
+  background-size: 220% 100%;
+  animation: nyaarr-loading-line 1.2s ease-in-out infinite;
+}
+
+@media (max-width: 760px) {
+  .anime-detail-loading-hero {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .anime-detail-loading-poster {
+    width: 120px;
+  }
+}
+
+@media (max-width: 760px) {
+  .anime-detail-loading-hero {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .anime-detail-loading-poster {
+    width: 120px;
+  }
+}
+
+@media (max-width: 760px) {
+  .anime-detail-loading-hero {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .anime-detail-loading-poster {
+    width: 120px;
   }
 }
 

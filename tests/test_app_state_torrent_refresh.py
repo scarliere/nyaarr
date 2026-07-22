@@ -1189,6 +1189,30 @@ def test_activity_queued_rows_include_missing_episodes_without_selected_torrent(
     assert app_state._active_activity_count(database["anime"]) == 1
 
 
+def test_activity_queued_rows_mark_resolved_candidate_as_dispatch_pending() -> None:
+    candidate = auto_candidate(3)
+    database = auto_dispatch_database([candidate])
+    anime = database["anime"][0]
+    anime["completion"] = {
+        "expected_episodes": 3,
+        "local_episodes": 2,
+        "progress_target": 3,
+        "missing_episodes": 1,
+    }
+    anime["episode_files"] = [
+        "C:/Anime/Petals/[SteadySubs] Petals of Reincarnation - 01 [1080p].mkv",
+        "C:/Anime/Petals/[SteadySubs] Petals of Reincarnation - 02 [1080p].mkv",
+    ]
+
+    rows = app_state._activity_queued_rows(database)
+
+    assert len(rows) == 1
+    assert rows[0]["episode"] == "3"
+    assert rows[0]["status"] == "resolved"
+    assert rows[0]["status_label"] == "Resolved · dispatch pending"
+    assert rows[0]["title"] == candidate["title"]
+
+
 def test_missing_qbittorrent_queue_is_marked_missing_and_no_longer_counts_as_queued(monkeypatch) -> None:
     database = auto_dispatch_database([])
     anime = database["anime"][0]
@@ -1371,7 +1395,7 @@ def test_dispatch_does_not_dedupe_against_missing_queue_records(monkeypatch) -> 
     app_state._maybe_dispatch_torrent(database, anime)
 
     assert client.urls == [candidate["torrent_url"]]
-    assert any(queue.get("episode") == 5 and queue.get("status") == "queued" for queue in anime["download_queues"])
+    assert any(queue.get("episode") == 5 and queue.get("status") == "pending_safety" for queue in anime["download_queues"])
 
 
 def test_dispatch_batch_cleans_up_individual_episode_torrents(monkeypatch) -> None:
@@ -1411,7 +1435,51 @@ def test_dispatch_batch_cleans_up_individual_episode_torrents(monkeypatch) -> No
     assert client.deleted == [("episode-1", True), ("episode-2", True)]
     assert [queue["status"] for queue in anime["download_queues"][:2]] == ["superseded", "superseded"]
     assert anime["download_queues"][2]["status"] == "downloading"
-    assert any(queue.get("release_kind") == "batch" and queue.get("status") == "queued" for queue in anime["download_queues"])
+    assert any(queue.get("release_kind") == "batch" and queue.get("status") == "pending_safety" for queue in anime["download_queues"])
+
+
+def test_dispatch_caps_backlog_per_anime_and_keeps_it_hot(monkeypatch) -> None:
+    monkeypatch.setattr(app_state, "MAX_TORRENT_DISPATCHES_PER_ANIME_TICK", 2)
+    database = auto_dispatch_database([auto_candidate(episode) for episode in range(1, 5)])
+    anime = database["anime"][0]
+    anime["episodes"] = "4"
+    anime["completion"] = {
+        "expected_episodes": 4,
+        "local_episodes": 0,
+        "progress_target": 4,
+        "missing_episodes": 4,
+    }
+    client = FakeDownloadClient()
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+
+    app_state._maybe_dispatch_torrent(database, anime)
+
+    assert len(client.urls) == 2
+    assert anime["torrent_dispatch_backlog"] is True
+    assert app_state._recent_dispatch_attempt(anime, 9999999999) is False
+    assert any("Deferred 2 resolved torrent(s)" in notice for notice in anime["torrent_search"]["notices"])
+
+
+def test_dispatch_inspects_and_starts_safe_torrent_immediately(monkeypatch) -> None:
+    candidate = auto_candidate(1)
+    database = auto_dispatch_database([candidate])
+    anime = database["anime"][0]
+    client = FakeDownloadClient(
+        files_by_hash={
+            str(candidate["infohash"]).casefold(): [
+                {"index": 0, "name": "[SteadySubs] Petals of Reincarnation - 01 [1080p].mkv"}
+            ]
+        }
+    )
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+
+    app_state._maybe_dispatch_torrent(database, anime)
+
+    queue = anime["download_queue"]
+    assert queue["safety_status"] == "safe"
+    assert queue["status"] == "queued"
+    assert client.resumed == [str(candidate["infohash"]).casefold()]
+    assert "started immediately" in queue["message"]
 
 
 def test_refresh_download_queue_cleans_up_episode_torrents_covered_by_existing_batch(monkeypatch) -> None:
@@ -1474,6 +1542,71 @@ def test_qbittorrent_resume_falls_back_to_start_on_404() -> None:
         ("/api/v2/torrents/resume", {"hashes": "abc123"}),
         ("/api/v2/torrents/start", {"hashes": "abc123"}),
     ]
+
+
+def test_qbittorrent_add_url_rejects_textual_failure_response() -> None:
+    client = qbittorrent_client.QBittorrentClient({"host": "localhost", "port": 8080})
+    client._multipart_request = lambda path, fields: b"Fails."
+
+    try:
+        client.add_url(
+            "https://nyaa.si/download/123.torrent",
+            save_path="C:/Anime",
+            category="nyaarr",
+            tags="nyaarr,anime-1",
+        )
+    except qbittorrent_client.QBittorrentError as exc:
+        assert "rejected the torrent add request: Fails." in str(exc)
+    else:
+        raise AssertionError("qBittorrent's textual failure response must not create a queue record")
+
+
+def test_qbittorrent_add_url_accepts_ok_response() -> None:
+    client = qbittorrent_client.QBittorrentClient({"host": "localhost", "port": 8080})
+    client._multipart_request = lambda path, fields: b"Ok."
+
+    client.add_url(
+        "https://nyaa.si/download/123.torrent",
+        save_path="C:/Anime",
+        category="nyaarr",
+        tags="nyaarr,anime-1",
+    )
+
+
+def test_qbittorrent_add_url_requires_expected_hash_to_become_visible(monkeypatch) -> None:
+    client = qbittorrent_client.QBittorrentClient({"host": "localhost", "port": 8080})
+    client._multipart_request = lambda path, fields: b"Ok."
+    client.torrents = lambda **kwargs: []
+    monkeypatch.setattr(qbittorrent_client.time, "sleep", lambda seconds: None)
+
+    try:
+        client.add_url(
+            "https://nyaa.si/download/123.torrent",
+            save_path="C:/Anime",
+            category="nyaarr",
+            tags="nyaarr,anime-1",
+            expected_infohash="abc123",
+        )
+    except qbittorrent_client.QBittorrentError as exc:
+        assert "expected torrent did not become visible" in str(exc)
+    else:
+        raise AssertionError("An accepted command must not become a queue until its hash is visible")
+
+
+def test_qbittorrent_add_url_confirms_expected_hash(monkeypatch) -> None:
+    client = qbittorrent_client.QBittorrentClient({"host": "localhost", "port": 8080})
+    client._multipart_request = lambda path, fields: b"Ok."
+    snapshots = [[], [{"hash": "abc123"}]]
+    client.torrents = lambda **kwargs: snapshots.pop(0)
+    monkeypatch.setattr(qbittorrent_client.time, "sleep", lambda seconds: None)
+
+    client.add_url(
+        "https://nyaa.si/download/123.torrent",
+        save_path="C:/Anime",
+        category="nyaarr",
+        tags="nyaarr,anime-1",
+        expected_infohash="abc123",
+    )
 
 
 def test_safe_auto_torrent_still_paused_is_resumed_on_refresh(monkeypatch) -> None:
@@ -2662,6 +2795,39 @@ def test_maintenance_normalizes_stored_ignored_only_candidates(monkeypatch) -> N
     assert anime["torrent_search"]["candidates"] == []
     assert anime["torrent_manual_selection"]["required"] is True
     assert anime["torrent_manual_selection"]["intervention_type"] == "no_candidates"
+    assert writes == [database]
+
+
+def test_local_maintenance_dispatches_stored_candidates_without_external_refresh(monkeypatch) -> None:
+    database = manual_database()
+    anime = database["anime"][0]
+    anime["torrent_search"] = {"candidates": [manual_candidate("candidate-1")], "notices": []}
+    anime["torrent_manual_selection"] = {"required": False}
+    database["settings"]["root_folder"] = "C:/Anime"
+    database["settings"]["download_client"] = {
+        "implementation": "qbittorrent",
+        "enabled": True,
+        "category": "nyaarr",
+    }
+    writes = []
+    dispatched = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_refresh_download_queue", lambda db: False)
+    monkeypatch.setattr(app_state, "_refresh_library_states", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_state, "_sync_anime_nfo_file", lambda item: False)
+    monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", lambda db, item, forced_release=None: dispatched.append(item))
+
+    summary = app_state.run_periodic_maintenance_tick(
+        include_airing=False,
+        include_external=False,
+        include_local=True,
+    )
+
+    assert summary["torrent_searches"] == 0
+    assert summary["dispatch_attempts"] == 1
+    assert dispatched == [anime]
     assert writes == [database]
 
 

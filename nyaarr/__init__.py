@@ -212,6 +212,18 @@ def create_app() -> Flask:
 
     @app.get("/anime/<path:library_id>")
     def anime_detail(library_id: str):
+        return render_template(
+            "anime_detail.html",
+            active_page="anime_list",
+            anime={"library_id": library_id, "title": "Anime"},
+            anilist_summary=None,
+            detail_summary=None,
+            loading=True,
+            async_data_url=url_for("anime_detail_data_page", library_id=library_id, **request.args),
+        )
+
+    @app.get("/anime/<path:library_id>/data-page")
+    def anime_detail_data_page(library_id: str):
         anime = anime_detail_model(library_id)
         if anime is None:
             if _wants_json_response():
@@ -219,10 +231,12 @@ def create_app() -> Flask:
             return redirect(url_for("anime_list"))
         return render_template(
             "anime_detail.html",
+            layout_template="_partial_base.html",
             active_page="anime_list",
             anime=anime,
             anilist_summary=_anilist_summary_from_query(),
             detail_summary=_anime_detail_summary_from_query(),
+            loading=False,
         )
 
     @app.get("/anime/<path:library_id>/episode-titles")

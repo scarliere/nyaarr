@@ -44,6 +44,7 @@
               <th>Episode</th>
               <th>Date Added</th>
               <th>Resolution</th>
+              <th>Status</th>
               {% if activity.section != 'history' %}<th>Time Left</th>{% endif %}
               <th>Progress</th>
               {% if activity.section == 'history' %}<th>Date Completed</th>{% endif %}
@@ -59,6 +60,7 @@
                 <td data-label="Episode">{{ row.episode }}</td>
                 <td data-label="Date Added">{{ row.date_added }}</td>
                 <td data-label="Resolution">{{ row.resolution }}</td>
+                <td data-label="Status"><span class="activity-status-pill {{ row.status_tone }}">{{ row.status_label }}</span></td>
                 {% if activity.section != 'history' %}<td data-label="Time Left">{{ row.time_left }}</td>{% endif %}
                 <td data-label="Progress">
                   <div class="activity-progress-cell">
@@ -87,7 +89,7 @@
             {% else %}
               {% if activity.description == 'Loading activity.' %}
                 <tr>
-                  <td colspan="{% if activity.section != 'history' %}7{% else %}6{% endif %}" class="activity-empty activity-loading-cell">
+                  <td colspan="{% if activity.section != 'history' %}8{% else %}7{% endif %}" class="activity-empty activity-loading-cell">
                     <div class="table-loading-card" role="status" aria-live="polite">
                       <strong>Loading {{ activity.label|lower }} table</strong>
                       <span>Fetching the latest Activity rows.</span>
@@ -101,7 +103,7 @@
                 </tr>
               {% else %}
                 <tr>
-                  <td colspan="{% if activity.section != 'history' %}7{% else %}6{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
+                  <td colspan="{% if activity.section != 'history' %}8{% else %}7{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
                 </tr>
               {% endif %}
             {% endfor %}
@@ -236,12 +238,15 @@
           cells[1].textContent = row.episode || "";
           cells[2].textContent = row.date_added || "";
           cells[3].textContent = row.resolution || "";
-          let progressCellIndex = 5;
+          const statusPill = cells[4].querySelector(".activity-status-pill");
+          statusPill.textContent = row.status_label || "Unknown";
+          statusPill.className = `activity-status-pill ${row.status_tone || "wanted"}`;
+          let progressCellIndex = 6;
           if (section === "history") {
-            progressCellIndex = 4;
-            cells[5].textContent = row.date_completed || "";
+            progressCellIndex = 5;
+            cells[6].textContent = row.date_completed || "";
           } else {
-            cells[4].textContent = row.time_left || "";
+            cells[5].textContent = row.time_left || "";
           }
           const progress = Math.max(0, Math.min(Math.round(Number(row.progress || 0)), 100));
           const progressBar = cells[progressCellIndex].querySelector(".activity-progress");
@@ -259,6 +264,13 @@
           tableRow.appendChild(textCell(row.episode, "Episode"));
           tableRow.appendChild(textCell(row.date_added, "Date Added"));
           tableRow.appendChild(textCell(row.resolution, "Resolution"));
+          const statusCell = document.createElement("td");
+          statusCell.dataset.label = "Status";
+          const statusPill = document.createElement("span");
+          statusPill.className = `activity-status-pill ${row.status_tone || "wanted"}`;
+          statusPill.textContent = row.status_label || "Unknown";
+          statusCell.appendChild(statusPill);
+          tableRow.appendChild(statusCell);
           if (section !== "history") tableRow.appendChild(textCell(row.time_left, "Time Left"));
           tableRow.appendChild(progressCell(row.progress));
           if (section === "history") tableRow.appendChild(textCell(row.date_completed, "Date Completed"));
@@ -276,7 +288,7 @@
             if (existingEmpty) return;
             const tableRow = document.createElement("tr");
             const cell = document.createElement("td");
-            cell.colSpan = section !== "history" ? 7 : 6;
+            cell.colSpan = section !== "history" ? 8 : 7;
             cell.className = "activity-empty";
             cell.textContent = `No ${(label || "queued").toLowerCase()} torrents.`;
             tableRow.appendChild(cell);

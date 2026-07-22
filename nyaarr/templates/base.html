@@ -109,6 +109,7 @@
       const nyaarrListCache = (() => {
         const prefix = 'nyaarr:list-cache:v1:';
         const ttlMs = 120000;
+        const maxEntries = 24;
 
         function key(url) {
           return `${prefix}${new URL(url, window.location.origin).href}`;
@@ -127,6 +128,18 @@
         function set(url, value) {
           try {
             window.sessionStorage.setItem(key(url), JSON.stringify({savedAt: Date.now(), value}));
+            const entries = Object.keys(window.sessionStorage)
+              .filter((item) => item.startsWith(prefix))
+              .map((item) => {
+                try {
+                  const cached = JSON.parse(window.sessionStorage.getItem(item) || 'null');
+                  return {key: item, savedAt: Number(cached && cached.savedAt || 0)};
+                } catch (error) {
+                  return {key: item, savedAt: 0};
+                }
+              })
+              .sort((left, right) => right.savedAt - left.savedAt);
+            entries.slice(maxEntries).forEach((entry) => window.sessionStorage.removeItem(entry.key));
           } catch (error) {
             clear();
           }
@@ -259,6 +272,8 @@
 
       function renderAsyncPageHtml(target, html) {
         target.innerHTML = html;
+        const pageTitle = target.querySelector('[data-page-title]');
+        if (pageTitle && pageTitle.dataset.pageTitle) document.title = pageTitle.dataset.pageTitle;
         target.querySelectorAll('script').forEach((oldScript) => {
           const script = document.createElement('script');
           for (const attribute of oldScript.attributes) {
@@ -286,15 +301,7 @@
           if (!response.ok) throw new Error(`Page data request failed with ${response.status}`);
           const html = await response.text();
           nyaarrListCache.set(shell.dataset.asyncPageUrl, html);
-          target.innerHTML = html;
-          target.querySelectorAll("script").forEach((oldScript) => {
-            const script = document.createElement("script");
-            for (const attribute of oldScript.attributes) {
-              script.setAttribute(attribute.name, attribute.value);
-            }
-            script.textContent = oldScript.textContent;
-            oldScript.replaceWith(script);
-          });
+          renderAsyncPageHtml(target, html);
           await refreshSidebarCounts();
         } catch (error) {
           const errorCard = document.createElement("section");

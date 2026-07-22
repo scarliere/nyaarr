@@ -7,11 +7,15 @@ List-oriented pages keep their most recently rendered data in browser
 Metadata Review, Calendar, Settings, System Logs, System Status, Activity, or an
 Add Anime search restores the saved result immediately instead of showing the
 loading placeholder and repeating the same request. Cached Anime Detail episode
-titles are restored through the same mechanism.
+titles and complete Anime Detail fragments are restored through the same
+mechanism. Anime Detail first renders a lightweight shell and loads its
+database-backed model from `/anime/<library_id>/data-page`, keeping navigation
+responsive while the detail calculation runs.
 
 The common loader owns HTML-fragment caching. Activity and Add Anime use the
 same cache for their JSON-backed lists. A fresh entry avoids another request;
 an older entry is replaced by the next server result.
+The cache is capped at the 24 newest entries per tab to keep storage use bounded.
 
 The combined UI bootstrap snapshot is cached as well. During full menu
 navigation, the new document restores Anime, Manual Selection, Metadata Review,
@@ -30,3 +34,14 @@ progress can update without returning to a loading state.
 
 The cache is a responsiveness layer, not persistent application storage. A
 page older than two minutes is refreshed from the server.
+
+## Resource and scaling trade-offs
+
+This adds no server-side cache, worker, or persistent memory cost. It uses
+bounded browser `sessionStorage`; actual size varies with list and episode
+counts and remains constrained by the browser's per-origin quota. The first
+detail visit still performs the existing whole-library state read in the
+background, so server CPU and latency can grow with library size. Splitting
+anime records into an indexed repository is the next scaling step if measured
+detail-generation time becomes significant; that requires a data migration and
+is intentionally separate from this low-risk deployment improvement.
