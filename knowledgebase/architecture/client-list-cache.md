@@ -13,6 +13,13 @@ The common loader owns HTML-fragment caching. Activity and Add Anime use the
 same cache for their JSON-backed lists. A fresh entry avoids another request;
 an older entry is replaced by the next server result.
 
+The combined UI bootstrap snapshot is cached as well. During full menu
+navigation, the new document restores Anime, Manual Selection, Metadata Review,
+Activity, Events, and Settings badge values immediately after parsing the
+sidebar and before rendering the main page. The normal conditional bootstrap
+request then refreshes those values without making counters disappear and
+reappear between menu items.
+
 ## Invalidation and limitations
 
 Submitting any POST form clears all cached lists before the mutation runs. This

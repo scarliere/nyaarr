@@ -65,6 +65,30 @@
       {% endif %}
     </aside>
 
+    <script>
+      (() => {
+        try {
+          const bootstrapUrl = new URL("{{ url_for('ui_bootstrap_data') }}", window.location.origin).href;
+          const cacheKey = `nyaarr:list-cache:v1:${bootstrapUrl}`;
+          const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
+          const counts = cached && cached.value && cached.value.sidebar_counts;
+          if (!counts) return;
+          document.querySelectorAll("[data-sidebar-count]").forEach((element) => {
+            const value = Number(counts[element.dataset.sidebarCount] || 0);
+            element.textContent = String(value);
+            element.hidden = value === 0;
+          });
+          const settingsMissing = Number(counts.settings_missing || 0);
+          const settingsLabel = document.querySelector("[data-settings-missing-count]");
+          const settingsBadge = document.getElementById("settings-missing-badge");
+          if (settingsLabel) settingsLabel.textContent = String(settingsMissing);
+          if (settingsBadge) settingsBadge.hidden = settingsMissing === 0;
+        } catch (error) {
+          // The normal bootstrap request restores counts if storage is unavailable.
+        }
+      })();
+    </script>
+
     <main class="app-shell"{% if async_data_url %} data-async-page-url="{{ async_data_url }}"{% endif %}>
       <header class="topbar">
         <form class="search" action="{{ url_for('add_anime') }}" method="get">
@@ -318,6 +342,7 @@
             if (!response.ok) return null;
             uiBootstrapEtag = response.headers.get('ETag') || '';
             uiBootstrapResult = await response.json();
+            nyaarrListCache.set("{{ url_for('ui_bootstrap_data') }}", uiBootstrapResult);
             return uiBootstrapResult;
           } catch (error) {
             return null;

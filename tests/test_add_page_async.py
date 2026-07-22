@@ -369,6 +369,8 @@ def test_shared_list_pages_use_session_cache_before_refetching() -> None:
     assert 'window.sessionStorage' in base
     assert 'if (cachedPage.fresh) return;' in base
     assert 'nyaarrListCache.clear();' in base
+    assert 'const cacheKey = `nyaarr:list-cache:v1:${bootstrapUrl}`;' in base
+    assert 'nyaarrListCache.set("{{ url_for(\'ui_bootstrap_data\') }}", uiBootstrapResult);' in base
     assert 'cachedActivity.fresh' in activity
     assert 'cachedSearch.fresh' in add_page
     assert 'cachedTitles.fresh' in detail

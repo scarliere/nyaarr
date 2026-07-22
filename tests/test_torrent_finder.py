@@ -335,6 +335,55 @@ def test_find_torrents_uses_successful_alternate_title_for_episode_searches(monk
     assert [candidate["episode"] for candidate in result["candidates"]] == [1, 2]
 
 
+def test_prioritized_subber_search_continues_from_kill_blue_to_kill_ao(monkeypatch: pytest.MonkeyPatch) -> None:
+    item = anime(progress_target=1)
+    item.update({'title': 'Kill Blue', 'aliases': ['Kill Ao']})
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        if 'kill ao' in query.casefold() and 'subsplease' in query.casefold():
+            candidate = release('SubsPlease', 1, seeders=20)
+            candidate['title'] = '[SubsPlease] Kill Ao - 01 [1080p]'
+            return [candidate]
+        if query.casefold() == 'kill blue':
+            candidate = release('OtherGroup', 1, seeders=100)
+            candidate['title'] = '[OtherGroup] Kill Blue - 01 [1080p]'
+            return [candidate]
+        return []
+
+    monkeypatch.setattr(torrent_finder, 'search_nyaa_rss', fake_search)
+
+    result = torrent_finder.find_torrents_for_anime(item, ['SubsPlease'])
+
+    assert result['query'] == 'Kill Ao'
+    assert result['candidates'][0]['release_group'] == 'SubsPlease'
+    assert 'Used alternate title search: Kill Ao.' in result['notices']
+
+
+def test_unparseable_primary_title_results_do_not_block_alias_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    item = anime(progress_target=1)
+    item.update({'title': 'Kill Blue', 'aliases': ['Kill Ao']})
+
+    def fake_search(query: str) -> list[dict[str, Any]]:
+        if query.casefold() == 'kill blue':
+            candidate = release('Unknown', 1)
+            candidate['title'] = '[Unknown] Kill Blue promotional video [1080p]'
+            candidate['release_kind'] = 'unknown'
+            candidate['episode'] = None
+            return [candidate]
+        if query.casefold() == 'kill ao':
+            candidate = release('SubsPlease', 1)
+            candidate['title'] = '[SubsPlease] Kill Ao - 01 [1080p]'
+            return [candidate]
+        return []
+
+    monkeypatch.setattr(torrent_finder, 'search_nyaa_rss', fake_search)
+
+    result = torrent_finder.find_torrents_for_anime(item)
+
+    assert result['query'] == 'Kill Ao'
+    assert result['candidates'][0]['release_group'] == 'SubsPlease'
+
+
 
 
 def test_find_torrents_continues_alias_search_for_existing_local_subber(monkeypatch: pytest.MonkeyPatch) -> None:

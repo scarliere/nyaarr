@@ -61,6 +61,7 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
     preferred_group = _local_release_group_preference(anime)
     preferred_groups = _release_group_preferences(preferred_group, preferred_subbers)
     search_preferred_groups = _release_group_preferences("", preferred_subbers)
+    target_search_groups = [preferred_group] if preferred_group else search_preferred_groups
     if not search_title:
         return {
             "query": "",
@@ -98,6 +99,19 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
             if not related_releases:
                 continue
 
+            usable_related_releases = [
+                release
+                for release in related_releases
+                if release.get("release_kind") in {"batch", "episode"}
+            ]
+            if not usable_related_releases:
+                notices.append(
+                    f"Continuing alternate title searches because {candidate_title} only found unparseable releases."
+                )
+                related_releases = []
+                continue
+            related_releases = usable_related_releases
+
             if not first_related_releases:
                 first_related_releases = related_releases
                 first_matched_search_title = candidate_title
@@ -106,12 +120,13 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
                 notices.append(f"Used alternate title search: {candidate_title}.")
             if query != candidate_title:
                 notices.append(f"Used preferred subber search: {query}.")
-            if preferred_group and not any(
-                str(release.get("release_group") or "").casefold() == preferred_group.casefold()
+            if target_search_groups and not any(
+                str(release.get("release_group") or "").casefold()
+                in {group.casefold() for group in target_search_groups}
                 for release in related_releases
             ):
                 notices.append(
-                    f"Continuing alternate title searches because {candidate_title} did not find {preferred_group} releases."
+                    f"Continuing alternate title searches because {candidate_title} did not find a prioritized release group."
                 )
                 related_releases = []
                 continue
