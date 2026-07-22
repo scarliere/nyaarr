@@ -23,6 +23,9 @@ Fallback providers are useful for getting a folder into the library with a title
 - NFO sync runs when writing the user database, after root-folder imports, after completed torrent imports, after manual metadata verification, after manual AniList ID overrides, and during periodic maintenance.
 - Folder-backed anime write `tvshow.nfo`; file-backed single items write a sibling `.nfo` next to the media file.
 
+- Root-folder scans read those NFO files before filename-based matching. An AniList ID receives an exact lookup, while temporary provider failures retain the NFO identity for later reconciliation.
+- NFO identities do not bypass folder-integrity checks: an incompatible local/provider episode count is sent to manual verification as a possible mixed-anime folder.
+
 ## Current Limitations
 
 - NFO files are written only when `local_path` exists on disk. An added anime without a downloaded/imported folder gets its NFO after a folder or file path exists.

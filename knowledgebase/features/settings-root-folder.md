@@ -32,6 +32,11 @@ The scan imports:
 
 Imported records use:
 
+
+Before resolving a folder or file by its filesystem name, the scanner reads an existing `tvshow.nfo` (or sibling `.nfo` for a root-level media file). NFO title and descriptive fields seed the imported record, and an AniList `uniqueid`/`id` is used for an exact provider lookup. If the provider is temporarily unavailable, the durable NFO identity is retained for later reconciliation instead of falling back to an unrelated title match. Malformed NFO files safely fall back to normal filename matching.
+
+An exact NFO identity is still checked against the media found in the folder. If its provider episode total conflicts with the local media count, the import is flagged for manual verification with a mixed-folder warning rather than being treated as a completed anime.
+
 - `source`: `Root Folder Scan + AniList` when the folder/file name has a confident AniList match.
 - `source`: `Root Folder Scan` when no confident AniList match is found.
 - `local_path`: resolved path to the folder or file
@@ -121,7 +126,7 @@ Uncertain matches remain in the library but are flagged in dashboard badges, the
 ## Current Limitations
 
 - Browser-native folder picking is not implemented; the local path is entered as text.
-- Scanned imports use filesystem names when AniList cannot provide a confident match.
+- Scanned imports use NFO titles first and filesystem names when no readable NFO identity is available and AniList cannot provide a confident match.
 - Media quality detection requires `ffprobe`.
 - The scan does not move, rename, or delete files.
 - Root-folder scans queue missing-episode torrent searches for the background worker instead of running nyaa.si searches inline.

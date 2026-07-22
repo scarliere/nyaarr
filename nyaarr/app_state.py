@@ -137,6 +137,7 @@ MAX_TORRENT_DISPATCHES_PER_ANIME_TICK = max(
 MAX_TORRENT_DISPATCH_ANIME_PER_TICK = max(
     1, int(os.environ.get("NYAARR_MAX_TORRENT_DISPATCH_ANIME_PER_TICK", "2"))
 )
+MAX_STORAGE_REPAIRS_PER_TICK = max(1, int(os.environ.get("NYAARR_MAX_STORAGE_REPAIRS_PER_TICK", "20")))
 MAX_AIRING_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_AIRING_REFRESHES_PER_TICK", "10"))
 MAX_POSTER_REPAIRS_PER_TICK = int(os.environ.get("NYAARR_MAX_POSTER_REPAIRS_PER_TICK", "3"))
 MAX_ANILIST_METADATA_REFRESHES_PER_TICK = int(os.environ.get("NYAARR_MAX_ANILIST_METADATA_REFRESHES_PER_TICK", "3"))
@@ -516,6 +517,9 @@ def run_periodic_maintenance_tick(
         "anilist_metadata_refreshes": 0,
         "anilist_metadata_deferred": 0,
         "nfo_files_written": 0,
+        "nested_files_flattened": 0,
+        "stale_torrents_removed": 0,
+        "missing_torrents_restarted": 0,
         "last_external_request_at": None,
         "next_external_request_after": None,
         "last_run_at": datetime.now(timezone.utc).isoformat(),
@@ -525,6 +529,12 @@ def run_periodic_maintenance_tick(
         database = _read_user_database()
         changed = False
         now = time.time()
+
+        if include_local:
+            storage_summary = _reconcile_library_storage_and_missing_torrents(database)
+            summary.update(storage_summary)
+            if any(storage_summary.values()):
+                changed = True
 
         if include_local and _refresh_download_queue(database):
             summary["queue_refreshed"] = True
@@ -605,6 +615,48 @@ def run_periodic_maintenance_tick(
 
 def _pace_external_request(request_count: int) -> None:
     return None
+
+
+def _reconcile_library_storage_and_missing_torrents(database: dict[str, Any]) -> dict[str, int]:
+    summary = {"nested_files_flattened": 0, "stale_torrents_removed": 0, "missing_torrents_restarted": 0}
+    budget = MAX_STORAGE_REPAIRS_PER_TICK
+    library = [anime for anime in database.get("anime", []) if isinstance(anime, dict)]
+
+    for anime in library:
+        if budget <= 0:
+            break
+        root_text = _existing_anime_local_path(anime)
+        root = Path(root_text) if root_text else None
+        if root is None or not root.exists() or not root.is_dir():
+            continue
+        # Discovery is read-only. Nested torrent content and directories remain
+        # untouched so qBittorrent can continue to own and seed their paths.
+        anime["episode_files"] = sorted((str(path.resolve()) for path in _media_files(root)), key=str.casefold)
+        _refresh_library_state(anime, root_folder_configured=_root_folder_configured(database))
+
+    # Storage maintenance is deliberately library-only. Automatic qBittorrent
+    # relocation, removal, and restart are forbidden because stale client paths
+    # are not reliable evidence of where payload data belongs. Those actions
+    # require an explicit, reviewed recovery operation.
+    return summary
+
+
+def _client_torrent_matches_anime(torrent: dict[str, Any], anime: dict[str, Any]) -> bool:
+    library_id = str(anime.get("library_id") or "").casefold()
+    tags = {tag.strip().casefold() for tag in str(torrent.get("tags") or "").split(",") if tag.strip()}
+    if library_id and library_id in tags:
+        return True
+    name = str(torrent.get("name") or "")
+    return any(torrent_title_matches(title, name) for _source, title in _anime_confidence_title_values(anime))
+
+
+def _remove_empty_nested_directories(root: Path) -> None:
+    directories = sorted((path for path in root.rglob("*") if path.is_dir()), key=lambda path: len(path.parts), reverse=True)
+    for directory in directories:
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
 
 
 def _normalize_torrent_search_state(anime: dict[str, Any]) -> None:
@@ -1810,7 +1862,7 @@ def reject_flagged_torrent(library_id: str) -> tuple[bool, str]:
         client = client_from_settings(database["settings"], timeout=DOWNLOAD_CLIENT_TIMEOUT_SECONDS)
         torrent_hash = str(queue.get("hash") or "")
         if torrent_hash:
-            client.delete(torrent_hash, delete_files=True)
+            client.delete(torrent_hash, delete_files=False)
     except QBittorrentError as exc:
         _append_torrent_notice(anime, f"Rejected flagged torrent, but qBittorrent delete failed: {exc}")
 
@@ -3219,7 +3271,7 @@ def _cleanup_episode_queues_covered_by_batch(
         torrent_hash = str(queue.get("hash") or "").strip().casefold()
         try:
             if torrent_hash:
-                client.delete(torrent_hash, delete_files=True)
+                client.delete(torrent_hash, delete_files=False)
         except QBittorrentError as exc:
             queue["status"] = "error"
             queue["message"] = f"Batch torrent covers episode {episode}, but qBittorrent cleanup failed: {exc}"
@@ -3629,7 +3681,7 @@ def _delete_wrong_release_group_queue(
     queue_group = _queue_release_group(queue)
     try:
         if torrent_hash:
-            client.delete(torrent_hash, delete_files=True)
+            client.delete(torrent_hash, delete_files=False)
     except QBittorrentError as exc:
         queue["status"] = "error"
         queue["message"] = f"Wrong release group {queue_group}; qBittorrent delete failed: {exc}"
@@ -3661,45 +3713,9 @@ def _delete_wrong_release_group_queue(
 
 
 def _remove_wrong_release_group_imported_files(anime: dict[str, Any], queue: dict[str, Any]) -> list[str]:
-    queue_group = _queue_release_group(queue)
-    if not queue_group or queue_group == "Unknown":
-        return []
-    wanted_episodes = _wanted_import_episodes(anime, queue)
-    if not wanted_episodes:
-        episode = _int_value(queue.get("episode"))
-        wanted_episodes = {episode} if episode is not None else set()
-    episode_files = anime.get("episode_files")
-    if not isinstance(episode_files, list):
-        return []
-
-    kept_files: list[str] = []
-    removed_files: list[str] = []
-    for episode_file in episode_files:
-        path_text = str(episode_file or "")
-        path = Path(path_text)
-        file_episode = episode_number_from_title(path.name)
-        file_group = release_group_from_title(path.name)
-        should_remove = (
-            file_episode in wanted_episodes
-            and file_group
-            and file_group != "Unknown"
-            and file_group.casefold() == queue_group.casefold()
-        )
-        if not should_remove:
-            kept_files.append(path_text)
-            continue
-        removed_files.append(path_text)
-        try:
-            if path.exists() and path.is_file():
-                path.unlink()
-        except OSError:
-            kept_files.append(path_text)
-
-    if removed_files:
-        anime["episode_files"] = sorted(set(kept_files), key=str.casefold)
-        _refresh_media_tag(anime)
-        _refresh_library_state(anime)
-    return removed_files
+    # A release decision must never delete an existing library file. The file
+    # remains available until the user performs a separate explicit cleanup.
+    return []
 
 
 def _import_completed_torrent(
@@ -3773,20 +3789,16 @@ def _stage_imported_media_file(source_path: Path, destination: Path, queue: dict
         return False
 
     if destination.exists():
-        if not _queue_imports_selected_batch_files(queue):
-            return True
-        try:
-            destination.unlink()
-        except OSError as exc:
-            queue["import_status"] = "waiting_for_files"
-            queue["message"] = f"Could not replace existing episode file from selected batch: {exc}"
-            return False
+        return True
 
     try:
-        shutil.move(str(source_path), str(destination))
+        try:
+            os.link(source_path, destination)
+        except OSError:
+            shutil.copy2(str(source_path), str(destination))
     except OSError as exc:
         queue["import_status"] = "waiting_for_files"
-        queue["message"] = f"Could not stage selected media file in anime folder: {exc}"
+        queue["message"] = f"Could not preserve and stage selected media file in anime folder: {exc}"
         return False
     return True
 
@@ -3812,61 +3824,17 @@ def _normalize_completed_torrent_folder(
     if content_path.resolve() == target_folder.resolve():
         queue["normalized_folder"] = str(target_folder.resolve())
         return target_folder
-    if content_path.parent.resolve() != target_folder.parent.resolve():
-        return content_path
-
-    old_name = content_path.name
-    new_name = target_folder.name
-    if old_name.casefold() == new_name.casefold():
-        queue["normalized_folder"] = str(content_path.resolve())
-        return content_path
-    if target_folder.exists() and any(target_folder.iterdir()):
-        queue["folder_rename_status"] = "merge_existing_target"
-        return content_path
-
-    torrent_hash = str(queue.get("hash") or "").strip()
-    if download_client is not None and torrent_hash:
-        try:
-            download_client.rename_folder(torrent_hash, old_name, new_name)
-            queue["folder_rename_status"] = "renamed"
-        except (AttributeError, QBittorrentError) as exc:
-            queue["folder_rename_status"] = "failed"
-            queue["folder_rename_error"] = str(exc)
-            return content_path
-    else:
-        queue["folder_rename_status"] = "local_only"
-
-    if not target_folder.exists() and content_path.exists():
-        try:
-            content_path.rename(target_folder)
-        except OSError as exc:
-            queue["folder_rename_status"] = "failed"
-            queue["folder_rename_error"] = str(exc)
-            return content_path
-    if target_folder.exists():
-        queue["content_path"] = str(target_folder.resolve())
-        queue["normalized_folder"] = str(target_folder.resolve())
-        return target_folder
+    # Never rename a qBittorrent-owned content folder automatically. Importable
+    # media is hardlinked or copied into the library while the original torrent
+    # layout remains intact for verification and seeding.
+    queue["folder_rename_status"] = "preserved_torrent_layout"
     return content_path
 
 
 def _remove_rejected_files_from_renamed_folder(queue: dict[str, Any], rejected_paths: list[dict[str, str]]) -> None:
-    if queue.get("folder_rename_status") != "renamed":
-        return
-    removed: list[str] = []
-    for rejected in rejected_paths:
-        path_text = str(rejected.get("path") or "")
-        if not path_text:
-            continue
-        path = Path(path_text)
-        try:
-            if path.exists() and path.is_file():
-                path.unlink()
-                removed.append(str(path.resolve()))
-        except OSError:
-            continue
-    if removed:
-        queue["removed_rejected_files"] = removed
+    # Validation may reject a file for import, but automatic validation never
+    # owns or deletes torrent payload or existing library media.
+    return
 
 
 def _validated_import_source_paths(
@@ -3926,15 +3894,9 @@ def _relocate_episode_queue_to_local_folder(client: Any, torrent_hash: str, anim
     current_save_path = str(queue.get("save_path") or "").strip()
     if _same_path_text(current_save_path, local_path):
         return False
-    try:
-        client.set_location(torrent_hash, local_path)
-    except (AttributeError, QBittorrentError) as exc:
-        queue["relocation_status"] = "failed"
-        queue["relocation_error"] = str(exc)
-        return False
-    queue["save_path"] = local_path
-    queue["relocation_status"] = "moved_to_local_folder"
-    return True
+    queue["relocation_status"] = "manual_review_required"
+    queue["relocation_error"] = "Automatic qBittorrent relocation is disabled to protect existing library data."
+    return False
 
 
 def _same_path_text(left: str, right: str) -> bool:
@@ -5204,9 +5166,18 @@ def _root_folder_candidate_from_child(child: Path) -> dict[str, Any] | None:
     return None
 
 
-def _imported_anime_item(title: str, source_path: Path, media_files: list[Path]) -> dict[str, Any]:
+def _imported_anime_item(
+    title: str,
+    source_path: Path,
+    media_files: list[Path],
+    *,
+    nfo_path: Path | None = None,
+) -> dict[str, Any]:
     resolved_path = source_path.resolve()
-    normalized_title = _clean_import_title(title)
+    if nfo_path is None:
+        nfo_path = source_path / "tvshow.nfo" if source_path.is_dir() else source_path.with_suffix(".nfo")
+    nfo_metadata = _read_anime_nfo(nfo_path)
+    normalized_title = _clean_import_title(str(nfo_metadata.get("title") or title))
     base_item = {
         "library_id": f"root-folder:{_stable_path_id(resolved_path)}",
         "title": normalized_title,
@@ -5239,13 +5210,109 @@ def _imported_anime_item(title: str, source_path: Path, media_files: list[Path])
             "notices": ["Already present in the configured root folder."],
         },
     }
-    resolved_item = _resolve_imported_anime_metadata(base_item, normalized_title)
+    _apply_nfo_metadata(base_item, nfo_metadata)
+    resolved_item = _resolve_imported_anime_metadata_from_nfo(base_item, normalized_title, nfo_metadata)
+    if resolved_item is None:
+        resolved_item = _resolve_imported_anime_metadata(base_item, normalized_title)
     _refresh_media_tag(resolved_item)
     _refresh_library_state(resolved_item)
     return resolved_item
 
 
+def _read_anime_nfo(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        root = ET.fromstring(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ET.ParseError):
+        return {}
+    if root.tag.casefold().rsplit("}", 1)[-1] != "tvshow":
+        return {}
+
+    def text(name: str) -> str:
+        element = root.find(name)
+        return str(element.text or "").strip() if element is not None else ""
+
+    provider_ids: dict[str, str] = {}
+    unique_ids = list(root.findall("uniqueid"))
+    unique_ids.sort(key=lambda element: str(element.attrib.get("default") or "").casefold() != "true")
+    for element in unique_ids:
+        provider = str(element.attrib.get("type") or "").strip().casefold()
+        value = str(element.text or "").strip()
+        if provider and value and provider not in provider_ids:
+            provider_ids[provider] = value
+    legacy_id = text("id")
+    if ":" in legacy_id:
+        provider, value = legacy_id.split(":", 1)
+        if provider.strip() and value.strip():
+            provider_ids.setdefault(provider.strip().casefold(), value.strip())
+    genres = [str(element.text or "").strip() for element in root.findall("genre")]
+    genres = [genre for genre in genres if genre]
+    thumb = next((str(element.text or "").strip() for element in root.findall("thumb") if str(element.text or "").strip()), "")
+    return {
+        "title": text("title"), "original_title": text("originaltitle"), "provider_ids": provider_ids,
+        "synopsis": text("plot"), "air_date": text("premiered"), "year": text("year"),
+        "status": text("status"), "studio": text("studio"), "genres": genres, "poster": thumb,
+    }
+
+
+def _apply_nfo_metadata(item: dict[str, Any], metadata: dict[str, Any]) -> None:
+    if not metadata:
+        return
+    for source, target in {
+        "title": "title", "original_title": "original_title", "synopsis": "synopsis",
+        "air_date": "air_date", "year": "year", "status": "status", "studio": "studio", "poster": "poster",
+    }.items():
+        value = metadata.get(source)
+        if str(value or "").strip():
+            item[target] = value
+    if metadata.get("genres"):
+        item["genres"] = list(metadata["genres"])
+    if metadata.get("provider_ids"):
+        item["provider_ids"] = dict(metadata["provider_ids"])
+    item["source"] = "Root Folder Scan + NFO"
+    item["nfo_metadata"] = True
+
+
+def _resolve_imported_anime_metadata_from_nfo(
+    item: dict[str, Any], import_title: str, metadata: dict[str, Any]
+) -> dict[str, Any] | None:
+    provider_ids = metadata.get("provider_ids") if isinstance(metadata.get("provider_ids"), dict) else {}
+    anilist_id = str(provider_ids.get("anilist") or "").strip()
+    if not anilist_id:
+        return None
+    search_titles = _metadata_match_context(import_title)["search_titles"]
+    try:
+        match = search_anilist_by_id(anilist_id)
+    except MetadataProviderError as exc:
+        item["anilist_reconciliation_status"] = "pending"
+        item["anilist_reconciliation_reason"] = str(exc)
+        item["manual_verification_required"] = False
+        item["metadata_search_titles"] = search_titles
+        return item
+    if not isinstance(match, dict) or not match:
+        item["manual_verification_required"] = True
+        item["manual_verification_reason"] = f"The NFO AniList ID {anilist_id} could not be resolved."
+        item["metadata_search_titles"] = search_titles
+        return item
+    context = _metadata_match_context(
+        import_title,
+        local_episode_count=_local_episode_count(item),
+        local_season_number=_local_episode_file_season_hint(item),
+    )
+    if not _metadata_episode_count_compatible(context, match):
+        item["manual_verification_required"] = True
+        item["manual_verification_reason"] = (
+            f"The folder contains {_local_episode_count(item)} media files, which conflicts with "
+            f"AniList ID {anilist_id}. Check this folder for files belonging to other anime."
+        )
+        item["metadata_candidates"] = _metadata_candidate_preview([match])
+        item["metadata_search_titles"] = search_titles
+        return item
+    return _apply_resolved_metadata(item, match, search_titles, "provider")
+
 def _refresh_library_states(library: list[dict[str, Any]], *, root_folder_configured: bool | None = None) -> dict[str, int]:
+
     summary = {"completed": 0, "monitored": 0, "paused": 0, "undownloadable": 0, "unknown": 0}
     for anime in library:
         state = _refresh_library_state(anime, root_folder_configured=root_folder_configured)

@@ -75,6 +75,27 @@ Each Queued row also has a checkbox. Reset Selected applies the same safe reset
 rules only to the chosen anime/episode rows, while Hard Reset All retains the
 full-library behavior.
 
+qBittorrent `missingFiles` recovery uses the public recheck operation after
+validating the anime folder. Truly absent media can be relocated to the anime's
+client-side save folder, rechecked in a hash batch, and restarted; stale client
+records whose files already exist can instead be removed without deleting
+media.
+
+## Recurring storage reconciliation
+
+Every local maintenance pass audits the full anime library read-only. Nested
+torrent folders, media files, empty directories, qBittorrent locations, and
+`missingFiles` entries are not mutated automatically.
+
+## Non-destructive ownership boundary
+
+Automated maintenance never relocates qBittorrent content, deletes torrent
+payload, unlinks library media, replaces an existing episode, or renames a
+torrent-owned folder. Torrent record cleanup always uses `deleteFiles=false`.
+Completed media is hardlinked into the anime folder when supported, otherwise
+copied, leaving the torrent source intact for recheck and seeding. Any payload
+deletion or client relocation requires a separate explicit recovery action.
+
 ## Resource impact and limitations
 
 No worker or cache was added. The local maintenance pass may make one extra

@@ -341,6 +341,7 @@ class FakeDownloadClient:
         self.file_priorities: list[tuple[str, list[int], int]] = []
         self.renamed_folders: list[tuple[str, str, str]] = []
         self.locations: list[tuple[str, str]] = []
+        self.rechecked: list[str] = []
         self._torrents = torrents or []
         self._files_by_hash = files_by_hash or {}
         self._file_error = file_error
@@ -375,6 +376,9 @@ class FakeDownloadClient:
 
     def set_location(self, torrent_hash: str, location: str) -> None:
         self.locations.append((torrent_hash, location))
+
+    def recheck(self, torrent_hashes: str) -> None:
+        self.rechecked.append(torrent_hashes)
 
 
 def auto_dispatch_database(candidates: list[dict[str, object]]) -> dict[str, object]:
@@ -885,6 +889,94 @@ def test_root_folder_import_with_fallback_provider_marks_anilist_reconciliation_
     assert "anilist_metadata_checked_at" not in item
 
 
+def test_root_folder_scan_uses_nfo_anilist_identity_before_folder_name(monkeypatch, tmp_path) -> None:
+    folder = tmp_path / "Wrong Folder Name"
+    folder.mkdir()
+    media_file = folder / "episode-01.mkv"
+    media_file.write_bytes(b"")
+    (folder / "tvshow.nfo").write_text(
+        """<tvshow>
+  <title>Petals of Reincarnation</title>
+  <originaltitle>Petals of Reincarnation</originaltitle>
+  <uniqueid type="anilist" default="true">179950</uniqueid>
+  <id>anilist:179950</id>
+  <genre>Action</genre>
+</tvshow>
+""",
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(app_state, "search_anilist_by_id", lambda value: calls.append(value) or root_scan_metadata())
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: pytest.fail("title search should not run"))
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+
+    item = app_state._root_folder_candidate_from_child(folder)
+
+    assert calls == ["179950"]
+    assert item is not None
+    assert item["title"] == "Petals of Reincarnation"
+    assert str(item["provider_ids"]["anilist"]) == "179950"
+    assert item["manual_verification_required"] is False
+
+
+def test_root_folder_scan_keeps_nfo_identity_during_provider_failure(monkeypatch, tmp_path) -> None:
+    folder = tmp_path / "Wrong Folder Name"
+    folder.mkdir()
+    media_file = folder / "episode-01.mkv"
+    media_file.write_bytes(b"")
+    (folder / "tvshow.nfo").write_text(
+        """<tvshow>
+  <title>Durable NFO Title</title>
+  <uniqueid type="anilist" default="true">12345</uniqueid>
+</tvshow>
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        app_state,
+        "search_anilist_by_id",
+        lambda value: (_ for _ in ()).throw(app_state.MetadataProviderError("AniList unavailable")),
+    )
+    monkeypatch.setattr(app_state, "_search_metadata_variants", lambda titles: pytest.fail("title search should not run"))
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+
+    item = app_state._root_folder_candidate_from_child(folder)
+
+    assert item is not None
+    assert item["title"] == "Durable NFO Title"
+    assert item["provider_ids"]["anilist"] == "12345"
+    assert item["source"] == "Root Folder Scan + NFO"
+    assert item["manual_verification_required"] is False
+    assert item["anilist_reconciliation_status"] == "pending"
+
+
+def test_root_folder_scan_flags_nfo_folder_with_incompatible_media_count(monkeypatch, tmp_path) -> None:
+    folder = tmp_path / "Mixed Folder"
+    folder.mkdir()
+    media_files = []
+    for episode in range(1, 21):
+        media_file = folder / f"unrelated-{episode:02d}.mkv"
+        media_file.write_bytes(b"")
+        media_files.append(media_file)
+    (folder / "tvshow.nfo").write_text(
+        """<tvshow>
+  <title>Petals of Reincarnation</title>
+  <uniqueid type="anilist" default="true">179950</uniqueid>
+</tvshow>
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_state, "search_anilist_by_id", lambda value: root_scan_metadata())
+    monkeypatch.setattr(app_state, "_refresh_media_tag", lambda anime, force=False: "skipped")
+
+    item = app_state._root_folder_candidate_from_child(folder)
+
+    assert item is not None
+    assert item["manual_verification_required"] is True
+    assert "files belonging to other anime" in item["manual_verification_reason"]
+    assert item["provider_ids"]["anilist"] == "179950"
+
+
 def test_root_scan_merges_partial_folder_into_existing_anime_and_marks_missing(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
     folder = root / "Petals of Reincarnation"
@@ -1259,9 +1351,9 @@ def test_refresh_download_queue_relocates_episode_to_existing_local_folder(monke
     changed = app_state._refresh_download_queue(database)
 
     assert changed is True
-    assert client.locations == [("subsplease-10", "C:/Anime/Shibou Yuugi de Meshi wo Kuu")]
-    assert anime["download_queue"]["save_path"] == "C:/Anime/Shibou Yuugi de Meshi wo Kuu"
-    assert anime["download_queue"]["relocation_status"] == "moved_to_local_folder"
+    assert client.locations == []
+    assert anime["download_queue"]["save_path"] == "C:/Anime"
+    assert anime["download_queue"]["relocation_status"] == "manual_review_required"
 
 
 def test_missing_hash_queue_reappearing_in_qbittorrent_is_revived(monkeypatch) -> None:
@@ -1318,7 +1410,7 @@ def test_unblocked_missing_wrong_group_queue_still_respects_local_subber(monkeyp
     assert changed is True
     assert anime["download_queue"]["status"] == "rejected"
     assert anime["download_queue"]["unblocked_retry"] is True
-    assert client.deleted == [("varyg-2", True)]
+    assert client.deleted == [("varyg-2", False)]
     assert database["ignored_torrents"][0]["hash"] == "varyg-2"
 
 
@@ -1432,7 +1524,7 @@ def test_dispatch_batch_cleans_up_individual_episode_torrents(monkeypatch) -> No
     app_state._maybe_dispatch_torrent(database, anime)
 
     assert client.urls == [batch["torrent_url"]]
-    assert client.deleted == [("episode-1", True), ("episode-2", True)]
+    assert client.deleted == [("episode-1", False), ("episode-2", False)]
     assert [queue["status"] for queue in anime["download_queues"][:2]] == ["superseded", "superseded"]
     assert anime["download_queues"][2]["status"] == "downloading"
     assert any(queue.get("release_kind") == "batch" and queue.get("status") == "pending_safety" for queue in anime["download_queues"])
@@ -1534,7 +1626,7 @@ def test_refresh_download_queue_cleans_up_episode_torrents_covered_by_existing_b
     changed = app_state._refresh_download_queue(database)
 
     assert changed is True
-    assert client.deleted == [("episode-1", True), ("episode-3", True)]
+    assert client.deleted == [("episode-1", False), ("episode-3", False)]
     assert anime["download_queues"][1]["status"] == "superseded"
     assert anime["download_queues"][2]["status"] == "superseded"
     assert anime["download_queues"][3]["status"] == "downloading"
@@ -1563,6 +1655,74 @@ def test_qbittorrent_resume_falls_back_to_start_on_404() -> None:
         ("/api/v2/torrents/resume", {"hashes": "abc123"}),
         ("/api/v2/torrents/start", {"hashes": "abc123"}),
     ]
+
+
+def test_qbittorrent_recheck_uses_batched_hashes() -> None:
+    client = qbittorrent_client.QBittorrentClient({"host": "localhost", "port": 8080})
+    calls = []
+    client._request = lambda path, **kwargs: calls.append((path, kwargs.get("data"))) or b""
+
+    client.recheck("hash-one|hash-two")
+
+    assert calls == [("/api/v2/torrents/recheck", {"hashes": "hash-one|hash-two"})]
+
+
+def test_storage_reconciliation_flattens_nested_media_and_repairs_missingfiles(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Petals of Reincarnation"
+    nested = root / "Petals Release"
+    nested.mkdir(parents=True)
+    episode_one = nested / "[SteadySubs] Petals of Reincarnation - 01 [1080p].mkv"
+    episode_one.write_bytes(b"episode-one")
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    anime["local_path"] = str(root)
+    anime["episode_files"] = [str(episode_one)]
+    client = FakeDownloadClient([
+        {"hash": "episode-1", "name": episode_one.name, "state": "missingFiles", "save_path": "D:/Anime/Petals"},
+        {"hash": "episode-2", "name": "[SteadySubs] Petals of Reincarnation - 02 [1080p].mkv", "state": "missingFiles", "save_path": "D:/Anime/Petals"},
+        {"hash": "episode-3", "name": "[SteadySubs] Petals of Reincarnation - 03 [1080p].mkv", "state": "stalledUP", "save_path": "D:/Anime/Petals"},
+    ])
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+    monkeypatch.setattr(app_state, "MAX_STORAGE_REPAIRS_PER_TICK", 20)
+
+    summary = app_state._reconcile_library_storage_and_missing_torrents(database)
+
+    assert summary == {
+        "nested_files_flattened": 0,
+        "stale_torrents_removed": 0,
+        "missing_torrents_restarted": 0,
+    }
+    assert episode_one.exists()
+    assert nested.exists()
+    assert client.deleted == []
+    assert client.locations == []
+    assert client.rechecked == []
+    assert client.resumed == []
+
+
+def test_storage_reconciliation_never_overwrites_or_deletes_existing_anime_files(monkeypatch, tmp_path) -> None:
+    anime_root = tmp_path / "Protected Anime"
+    nested = anime_root / "torrent-release"
+    nested.mkdir(parents=True)
+    existing_episode = anime_root / "Protected Anime - 01.mkv"
+    nested_episode = nested / existing_episode.name
+    unrelated_episode = anime_root / "Protected Anime - 02.mkv"
+    existing_episode.write_bytes(b"library-copy")
+    nested_episode.write_bytes(b"torrent-copy")
+    unrelated_episode.write_bytes(b"unrelated-episode")
+    database = auto_dispatch_database([])
+    database["anime"][0]["title"] = "Protected Anime"
+    database["anime"][0]["local_path"] = str(anime_root)
+    client = FakeDownloadClient([])
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *_args, **_kwargs: client)
+
+    summary = app_state._reconcile_library_storage_and_missing_torrents(database)
+
+    assert summary["nested_files_flattened"] == 0
+    assert existing_episode.read_bytes() == b"library-copy"
+    assert nested_episode.read_bytes() == b"torrent-copy"
+    assert unrelated_episode.read_bytes() == b"unrelated-episode"
+    assert nested.is_dir()
 
 
 def test_qbittorrent_add_url_rejects_textual_failure_response() -> None:
@@ -1812,7 +1972,7 @@ def test_rejected_flagged_torrent_is_ignored_and_not_retried(monkeypatch) -> Non
 
     assert success is True
     assert message == "Rejected flagged torrent and added it to the ignore list."
-    assert client.deleted == [(rejected["infohash"], True)]
+    assert client.deleted == [(rejected["infohash"], False)]
     assert client.urls == []
     assert database["ignored_torrents"][0]["key"] == f"hash:{rejected['infohash'].casefold()}"
     assert anime["download_queue"]["status"] == "rejected"
@@ -1869,8 +2029,8 @@ def test_selected_batch_import_replaces_existing_episode_file_in_anime_folder(mo
     imported = app_state._import_completed_torrent(anime, queue, {"download_client": {}})
 
     assert imported is True
-    assert destination.read_bytes() == b"batch torrent file"
-    assert not source.exists()
+    assert destination.read_bytes() == b"old individual torrent file"
+    assert source.exists()
     assert anime["local_path"] == str(anime_folder.resolve())
     assert anime["episode_files"] == [str(destination.resolve())]
 
@@ -2418,12 +2578,11 @@ def test_refresh_download_queue_deletes_wrong_subber_imported_seeding_torrent(mo
     changed = app_state._refresh_download_queue(database)
 
     assert changed is True
-    assert client.deleted == [("wrong-imported-hash", True)]
+    assert client.deleted == [("wrong-imported-hash", False)]
     assert anime["download_queue"]["status"] == "rejected"
-    assert str(wrong_file) not in anime["episode_files"]
-    assert not wrong_file.exists()
-    assert anime["completion"]["missing_episodes"] == 1
-    assert app_state._activity_queued_rows(database) == [app_state._activity_missing_episode_row(anime, 29)]
+    assert str(wrong_file) in anime["episode_files"]
+    assert wrong_file.exists()
+    assert anime["completion"]["missing_episodes"] == 0
 
 
 def test_refresh_download_queue_deletes_wrong_subber_completed_torrent(monkeypatch) -> None:
@@ -2466,7 +2625,7 @@ def test_refresh_download_queue_deletes_wrong_subber_completed_torrent(monkeypat
     changed = app_state._refresh_download_queue(database)
 
     assert changed is True
-    assert client.deleted == [("wrong-hash", True)]
+    assert client.deleted == [("wrong-hash", False)]
     assert anime["download_queue"]["status"] == "rejected"
     assert "existing episodes use SubsPlease" in anime["download_queue"]["message"]
     assert database["ignored_torrents"][0]["hash"] == "wrong-hash"
@@ -2554,12 +2713,13 @@ def test_completed_batch_import_renames_torrent_folder_to_anilist_title(monkeypa
     normalized = root / "Monster"
     destination = normalized / episode.name
     assert changed is True
-    assert client.renamed_folders == [("monster-batch", torrent_folder.name, "Monster")]
+    assert client.renamed_folders == []
     assert anime["download_queue"]["status"] == "imported"
-    assert anime["download_queue"]["folder_rename_status"] == "renamed"
+    assert anime["download_queue"]["folder_rename_status"] == "preserved_torrent_layout"
     assert normalized.exists()
     assert destination.exists()
-    assert not torrent_folder.exists()
+    assert torrent_folder.exists()
+    assert episode.exists()
     assert anime["local_path"] == str(normalized.resolve())
     assert anime["episode_files"] == [str(destination.resolve())]
 
@@ -2605,7 +2765,7 @@ def test_completed_episode_import_uses_existing_local_folder(monkeypatch, tmp_pa
     assert changed is True
     assert anime["download_queue"]["status"] == "imported"
     assert destination.exists()
-    assert not source.exists()
+    assert source.exists()
     assert not duplicate.exists()
     assert anime["local_path"] == str(existing.resolve())
     assert str(destination.resolve()) in anime["episode_files"]

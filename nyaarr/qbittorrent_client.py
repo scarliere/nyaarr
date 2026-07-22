@@ -148,6 +148,9 @@ class QBittorrentClient:
     def set_location(self, torrent_hash: str, location: str) -> None:
         self._request("/api/v2/torrents/setLocation", data={"hashes": torrent_hash, "location": location})
 
+    def recheck(self, torrent_hashes: str) -> None:
+        self._request("/api/v2/torrents/recheck", data={"hashes": torrent_hashes})
+
     def _request(
         self,
         path: str,
