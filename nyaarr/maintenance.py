@@ -80,6 +80,7 @@ def has_active_job(job_type: str, idempotency_key: str | None = None) -> bool:
 
 def _scheduler_loop() -> None:
     next_periodic = time.monotonic() + max(_INITIAL_DELAY_SECONDS, 0)
+    next_queue_refresh = next_periodic
     startup_queued = False
     while not _stop_event.wait(0.5):
         try:
@@ -87,6 +88,9 @@ def _scheduler_loop() -> None:
                 enqueue_job("startup_reconcile", idempotency_key="startup-reconcile", priority=100)
                 startup_queued = True
             now = time.monotonic()
+            if now >= next_queue_refresh:
+                _enqueue_queue_refresh_job()
+                next_queue_refresh = now + max(app_state.DOWNLOAD_QUEUE_REFRESH_INTERVAL_SECONDS, 5)
             if now >= next_periodic:
                 _enqueue_periodic_jobs()
                 next_periodic = now + max(app_state.PERIODIC_MAINTENANCE_INTERVAL_SECONDS, 5)
@@ -107,6 +111,17 @@ def _enqueue_periodic_jobs() -> None:
     day_generation = datetime.now(timezone.utc).date().isoformat()
     if not has_active_job('offline_metadata_refresh'):
         enqueue_job("offline_metadata_refresh", idempotency_key=f"offline-metadata:{day_generation}", priority=10)
+
+
+def _enqueue_queue_refresh_job() -> None:
+    interval = max(app_state.DOWNLOAD_QUEUE_REFRESH_INTERVAL_SECONDS, 5)
+    generation = int(time.time() // interval)
+    if not has_active_job("download_queue_refresh"):
+        enqueue_job(
+            "download_queue_refresh",
+            idempotency_key=f"download-queue-refresh:{generation}",
+            priority=95,
+        )
 
 
 def _dispatch_due_jobs() -> None:
@@ -148,6 +163,7 @@ def _collect_finished_jobs() -> None:
 def _run_job(job: Job) -> None:
     handlers: dict[str, Callable[[dict[str, Any]], None]] = {
         "startup_reconcile": _run_startup_reconcile,
+        "download_queue_refresh": _run_download_queue_refresh,
         "local_reconcile": _run_local_reconcile,
         "external_refresh": _run_external_refresh,
         "airing_refresh": _run_airing_refresh,
@@ -166,6 +182,10 @@ def _run_job(job: Job) -> None:
 
 def _run_startup_reconcile(_payload: dict[str, Any]) -> None:
     app_state.run_startup_download_status_check()
+
+
+def _run_download_queue_refresh(_payload: dict[str, Any]) -> None:
+    app_state.run_download_queue_refresh()
 
 
 def _run_local_reconcile(_payload: dict[str, Any]) -> None:

@@ -125,12 +125,13 @@ MEDIA_PROBE_BYTES = 16 * 1024 * 1024
 FFPROBE_TIMEOUT_SECONDS = 20
 AIRING_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_AIRING_REFRESH_MAX_AGE_SECONDS", str(15 * 60)))
 PERIODIC_MAINTENANCE_INTERVAL_SECONDS = int(os.environ.get("NYAARR_PERIODIC_MAINTENANCE_INTERVAL_SECONDS", "60"))
+DOWNLOAD_QUEUE_REFRESH_INTERVAL_SECONDS = int(os.environ.get("NYAARR_DOWNLOAD_QUEUE_REFRESH_INTERVAL_SECONDS", "5"))
 TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS", str(PERIODIC_MAINTENANCE_INTERVAL_SECONDS)))
 TORRENT_DISPATCH_RETRY_SECONDS = int(os.environ.get("NYAARR_TORRENT_DISPATCH_RETRY_SECONDS", str(5 * 60)))
 TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS = int(
     os.environ.get("NYAARR_TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS", "90")
 )
-MAX_TORRENT_SEARCHES_PER_TICK = int(os.environ.get("NYAARR_MAX_TORRENT_SEARCHES_PER_TICK", "2"))
+MAX_TORRENT_SEARCHES_PER_TICK = int(os.environ.get("NYAARR_MAX_TORRENT_SEARCHES_PER_TICK", "10"))
 MAX_TORRENT_DISPATCHES_PER_ANIME_TICK = max(
     1, int(os.environ.get("NYAARR_MAX_TORRENT_DISPATCHES_PER_ANIME_TICK", "4"))
 )
@@ -486,6 +487,26 @@ def run_startup_download_status_check() -> dict[str, Any]:
                 f"library_refreshed={summary['library_refreshed']}, "
                 f"dispatch_attempts={summary['dispatch_attempts']}."
             )
+            _write_user_database(database)
+    finally:
+        _STATE_MAINTENANCE_LOCK.release()
+    return summary
+
+
+def run_download_queue_refresh() -> dict[str, Any]:
+    """Refresh qBittorrent-backed queue state without running broader maintenance."""
+    if not _STATE_MAINTENANCE_LOCK.acquire(blocking=False):
+        return {"status": "skipped", "reason": "maintenance already running"}
+
+    summary = {
+        "status": "ok",
+        "queue_refreshed": False,
+        "last_run_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        database = _read_user_database()
+        if _refresh_download_queue(database):
+            summary["queue_refreshed"] = True
             _write_user_database(database)
     finally:
         _STATE_MAINTENANCE_LOCK.release()
@@ -7713,5 +7734,3 @@ def _schedule_snapshot(anime: dict[str, Any]) -> tuple[Any, ...]:
         anime.get("airing_schedule_checked_at"),
         anime.get("airing_schedule_error"),
     )
-
-

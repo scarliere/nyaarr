@@ -47,7 +47,7 @@ Root-folder saves avoid inline nyaa.si fan-out. Folder imports use cached metada
 Page renders are passive for external providers. Dashboard, Calendar, Manual Selection, Activity, and Settings reads must not directly call nyaa.si or metadata APIs; the maintenance worker owns those checks.
 
 - Page renders call the same maintenance tick with external refreshes disabled, so opening the UI does not trigger nyaa.si or metadata API bursts.
-- Background ticks cap nyaa.si torrent searches with `NYAARR_MAX_TORRENT_SEARCHES_PER_TICK`, defaulting to 2.
+- Background ticks cap nyaa.si torrent searches with `NYAARR_MAX_TORRENT_SEARCHES_PER_TICK`, defaulting to 10; the existing request-spacing delay still applies between searches.
 - Background ticks cap metadata/airing refreshes with `NYAARR_MAX_AIRING_REFRESHES_PER_TICK`, defaulting to 100.
 - Background ticks cap AniList canonical metadata upgrade attempts with `NYAARR_MAX_ANILIST_METADATA_REFRESHES_PER_TICK`, defaulting to 3.
 - External requests inside a tick are spaced by `NYAARR_EXTERNAL_REQUEST_SPACING_SECONDS`, defaulting to 2 seconds.

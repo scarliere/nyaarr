@@ -86,7 +86,7 @@ The internal maintenance worker revisits every non-completed anime with missing 
 Rate-limit safeguards:
 
 - Page renders do not perform external nyaa.si refreshes.
-- A background tick refreshes at most `NYAARR_MAX_TORRENT_SEARCHES_PER_TICK` due torrent searches, defaulting to 2.
+- A background tick refreshes at most `NYAARR_MAX_TORRENT_SEARCHES_PER_TICK` due torrent searches, defaulting to 10 so a large wanted-episode backlog is drained promptly while requests remain spaced and bounded.
 - External requests inside a tick are spaced by `NYAARR_EXTERNAL_REQUEST_SPACING_SECONDS`, defaulting to 2 seconds.
 - Remaining stale searches are deferred to later ticks.
 
