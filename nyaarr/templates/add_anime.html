@@ -58,9 +58,15 @@
       if (updateUrl) {
         window.history.pushState({}, "", `${window.location.pathname}?${params.toString()}`);
       }
+      const cachedSearch = window.nyaarrListCache && window.nyaarrListCache.get(requestUrl);
+      if (cachedSearch) {
+        metadataShell.innerHTML = cachedSearch.value.html;
+        if (cachedSearch.fresh) return;
+      }
       try {
         const response = await fetch(requestUrl, { headers: { "Accept": "application/json", "X-Requested-With": "fetch" } });
         const result = await response.json();
+        if (window.nyaarrListCache) window.nyaarrListCache.set(requestUrl, result);
         metadataShell.innerHTML = result.html || `<section class="empty-state"><h2>No metadata found</h2><p>Try a different title, romaji title, or genre.</p></section>`;
       } catch (error) {
         metadataShell.innerHTML = `<section class="empty-state"><h2>Search failed</h2><p>Metadata search could not finish.</p></section>`;

@@ -181,6 +181,20 @@
           }, {once: true});
           status.appendChild(retry);
         };
+        const titlesUrl = '{{ url_for('anime_episode_titles_data', library_id=anime.library_id) }}';
+        const applyTitles = (payload) => {
+          Object.entries(payload.titles || {}).forEach(([episode, title]) => {
+            const cell = document.querySelector(`[data-episode-title='${episode}']`);
+            if (cell && title) {
+              cell.textContent = title;
+              cell.title = title;
+            }
+          });
+          if (!payload.pending && status) status.hidden = true;
+        };
+        const cachedTitles = window.nyaarrListCache && window.nyaarrListCache.get(titlesUrl);
+        if (cachedTitles) applyTitles(cachedTitles.value);
+
         const refreshTitles = async () => {
           if (document.hidden) {
             window.setTimeout(refreshTitles, 2000);
@@ -198,6 +212,7 @@
             );
             if (!response.ok) return;
             const payload = await response.json();
+            if (window.nyaarrListCache) window.nyaarrListCache.set(titlesUrl, payload);
             Object.entries(payload.titles || {}).forEach(([episode, title]) => {
               const cell = document.querySelector(`[data-episode-title="${episode}"]`);
               if (cell && title) {
@@ -215,7 +230,9 @@
             else window.setTimeout(refreshTitles, Math.min(2000 * (2 ** attempts), 16000));
           }
         };
-        window.setTimeout(refreshTitles, 2000);
+        if (!cachedTitles || !cachedTitles.fresh || cachedTitles.value.pending) {
+          window.setTimeout(refreshTitles, cachedTitles ? 0 : 2000);
+        }
       })();
     </script>
   {% endif %}

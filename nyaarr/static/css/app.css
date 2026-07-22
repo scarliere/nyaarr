@@ -2401,12 +2401,6 @@ h1 {
     white-space: nowrap;
   }
 
-  .activity-table th {
-    position: sticky;
-    top: 64px;
-    z-index: 1;
-  }
-
   .activity-table td strong,
   .activity-table td span {
     display: inline;

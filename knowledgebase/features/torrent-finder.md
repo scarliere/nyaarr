@@ -102,6 +102,17 @@ If every visible candidate for an anime is already present in qBittorrent, Nyaar
 ## Torrent Safety Gate
 
 Nyaarr currently treats nyaa.si downloads as anime-video-only. Every selected torrent is added to qBittorrent paused first without a qBittorrent rename override, preserving the original torrent name while Nyaarr tracks the eventual normalized import folder separately. Queue refresh reads the torrent's file list through qBittorrent before allowing the download to continue. Once a torrent passes safety inspection, Nyaarr retries resume on later refreshes if qBittorrent still reports the item paused and the user did not explicitly choose Add Paused.
+
+Explicitly dubbed releases are ineligible. RSS ingestion and final candidate
+selection reject titles or language/audio metadata marked Dub, Dubbed,
+English/ENG Dub, another language plus Dub, or English Audio. The same filter
+removes candidates stored before the upgrade from Manual Selection. Dual Audio
+and Multi Audio remain eligible because they may include Japanese; they rank
+below Japanese-only or unmarked-audio releases during group, batch, episode, and
+final dispatch selection. Multi Audio ranks below Dual Audio. Subtitle markers
+such as English Subs and Multi-Subs remain eligible. Unlabelled audio tracks
+cannot be identified from RSS titles alone and still rely on upstream release
+labelling.
 On application startup, the maintenance worker immediately performs a download-client status pass before the normal periodic delay. Legacy tracked torrents that are paused but missing safety metadata are sent through the same qBittorrent file inspection gate; safe torrents are resumed unless the user chose Add Paused.
 
 Allowed files are limited to known video container extensions in `MEDIA_EXTENSIONS`. Any other extension, including common executable, script, installer, archive, image, subtitle, or text files, flags the whole torrent as compromised. If one file in a batch is flagged, the entire torrent is held.

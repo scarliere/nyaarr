@@ -4,6 +4,11 @@
 
 Desktop activity, episode, manual-selection, metadata-review, and log tables now favor one-line rows. Long titles, filenames, torrents, and messages use truncation with native title text or expandable details, while the existing small-screen table-to-card layout remains available.
 
+Desktop column headers remain in their table header row instead of becoming
+vertically sticky and floating over body rows during page scrolling. The first
+identifier column can still remain horizontally sticky while a wide table is
+scrolled sideways.
+
 Anime preferences, AniList correction, and library removal are grouped behind one Options dialog. Missing-episode torrent URL forms and secondary rejection/removal actions use progressive disclosure so the primary workflow remains compact.
 
 Calendar entries link to anime detail pages, month cells collapse extra entries behind a +N more control, and users can jump directly to a date. Logs have in-page search/category/status filters and expandable copyable details.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import nyaarr
@@ -256,6 +258,7 @@ def test_primary_pages_render_stable_initial_models(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "event_log_model", lambda: calls.append("events") or {"rows": [], "count": 0})
     monkeypatch.setattr(nyaarr, "system_status_model", lambda: calls.append("status") or nyaarr._empty_system_status_model())
     monkeypatch.setattr(nyaarr, "dashboard_page_model", lambda: calls.append("dashboard") or {"anime_cards": [], "stats": [], "dashboard": nyaarr._empty_dashboard_model()})
+    monkeypatch.setattr(nyaarr, "anime_list_page_model", lambda: calls.append("anime_list") or {"anime_cards": [], "revision": 1})
 
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
@@ -355,6 +358,22 @@ def test_settings_root_scan_starts_global_sidebar_watcher(monkeypatch) -> None:
     assert b'window.refreshSidebarCounts' in response.data
 
 
+def test_shared_list_pages_use_session_cache_before_refetching() -> None:
+    root = Path(__file__).resolve().parents[1]
+    base = (root / 'nyaarr' / 'templates' / 'base.html').read_text(encoding='utf-8')
+    activity = (root / 'nyaarr' / 'templates' / 'activity.html').read_text(encoding='utf-8')
+    add_page = (root / 'nyaarr' / 'templates' / 'add_anime.html').read_text(encoding='utf-8')
+    detail = (root / 'nyaarr' / 'templates' / 'anime_detail.html').read_text(encoding='utf-8')
+
+    assert 'nyaarr:list-cache:v1:' in base
+    assert 'window.sessionStorage' in base
+    assert 'if (cachedPage.fresh) return;' in base
+    assert 'nyaarrListCache.clear();' in base
+    assert 'cachedActivity.fresh' in activity
+    assert 'cachedSearch.fresh' in add_page
+    assert 'cachedTitles.fresh' in detail
+
+
 def test_async_table_pages_render_loading_table_placeholders(monkeypatch) -> None:
     monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
     monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
@@ -385,11 +404,13 @@ def test_async_data_endpoints_load_models_after_page_render(monkeypatch) -> None
     monkeypatch.setattr(nyaarr, "event_log_model", lambda: calls.append("events") or {"rows": [], "count": 0})
     monkeypatch.setattr(nyaarr, "system_status_model", lambda: calls.append("status") or nyaarr._empty_system_status_model())
     monkeypatch.setattr(nyaarr, "dashboard_page_model", lambda: calls.append("dashboard") or {"anime_cards": [], "stats": [], "dashboard": nyaarr._empty_dashboard_model()})
+    monkeypatch.setattr(nyaarr, "anime_list_page_model", lambda: calls.append("anime_list") or {"anime_cards": [], "revision": 1})
     app = nyaarr.create_app()
     app.config.update(TESTING=True)
     client = _authenticated_client(app)
 
     routes = (
+        "/dashboard/data-page",
         "/anime/list/data-page",
         "/anime/manual-selection/data-page",
         "/anime/metadata-verification/data-page",
@@ -406,6 +427,7 @@ def test_async_data_endpoints_load_models_after_page_render(monkeypatch) -> None
         assert client.get(route).status_code == 200, route
 
     assert "dashboard" in calls
+    assert "anime_list" in calls
     assert "manual_selection" in calls
     assert "metadata" in calls
     assert "calendar" in calls
@@ -416,6 +438,33 @@ def test_async_data_endpoints_load_models_after_page_render(monkeypatch) -> None
     assert "root_missing" in calls
     assert "events" in calls
     assert "status" in calls
+
+
+def test_dashboard_and_anime_list_have_distinct_content(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(
+        nyaarr,
+        "dashboard_page_model",
+        lambda: {"anime_cards": [], "stats": [], "dashboard": nyaarr._empty_dashboard_model()},
+    )
+    monkeypatch.setattr(nyaarr, "anime_list_page_model", lambda: {"anime_cards": [], "revision": 1})
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+    client = _authenticated_client(app)
+
+    dashboard = client.get("/dashboard/data-page")
+    anime_list = client.get("/anime/list/data-page")
+    shell = client.get("/")
+
+    assert b"What needs attention" in dashboard.data
+    assert b"Active downloads" in dashboard.data
+    assert b"Anime library" in dashboard.data
+    assert b"What needs attention" not in anime_list.data
+    assert b"Active downloads" not in anime_list.data
+    assert b"Anime library" in anime_list.data
+    assert b"Health" in anime_list.data
+    assert b">Dashboard</span>" in shell.data
+    assert b'href="/anime/list"' in shell.data
 
 
 def test_anime_detail_anilist_override_route_redirects(monkeypatch) -> None:

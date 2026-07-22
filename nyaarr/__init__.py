@@ -20,6 +20,7 @@ from .app_state import (
     anime_detail_model,
     anime_episode_titles_model,
     anime_library,
+    anime_list_page_model,
     calendar_model,
     dashboard_model,
     dashboard_page_model,
@@ -161,28 +162,52 @@ def create_app() -> Flask:
     def dashboard():
         return render_template(
             "dashboard.html",
-            active_page="anime_list",
+            active_page="dashboard",
             anime_cards=[],
             stats=[],
             dashboard=_empty_dashboard_model(),
+            dashboard_mode=True,
             loading=True,
-            async_data_url=url_for("dashboard_data"),
+            async_data_url=url_for("dashboard_data_page"),
         )
 
     @app.get("/anime/list")
     def anime_list():
-        return dashboard()
+        return render_template(
+            "dashboard.html",
+            active_page="anime_list",
+            anime_cards=[],
+            stats=[],
+            dashboard=_empty_dashboard_model(),
+            dashboard_mode=False,
+            loading=True,
+            async_data_url=url_for("anime_list_data_page"),
+        )
+
+    @app.get("/dashboard/data-page")
+    def dashboard_data_page():
+        model = dashboard_page_model()
+        return render_template(
+            "dashboard.html",
+            layout_template="_partial_base.html",
+            active_page="dashboard",
+            anime_cards=model["anime_cards"],
+            stats=model["stats"],
+            dashboard=model["dashboard"],
+            dashboard_mode=True,
+        )
 
     @app.get("/anime/list/data-page")
-    def dashboard_data():
-        model = dashboard_page_model()
+    def anime_list_data_page():
+        model = anime_list_page_model()
         return render_template(
             "dashboard.html",
             layout_template="_partial_base.html",
             active_page="anime_list",
             anime_cards=model["anime_cards"],
-            stats=model["stats"],
-            dashboard=model["dashboard"],
+            stats=[],
+            dashboard=_empty_dashboard_model(),
+            dashboard_mode=False,
         )
 
     @app.get("/anime/<path:library_id>")

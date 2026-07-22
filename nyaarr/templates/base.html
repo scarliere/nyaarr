@@ -19,6 +19,7 @@
       </a>
 
       <nav class="nav-list">
+        <a class="nav-item {% if active_page == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}"><span>Dashboard</span></a>
         <details class="nav-group" {% if active_page in ['anime_list', 'anime_manual_selection', 'anime_metadata_verification'] %}open{% endif %}>
           <summary class="nav-item nav-summary {% if active_page in ['anime_list', 'anime_manual_selection', 'anime_metadata_verification'] %}active{% endif %}">
             <span>Anime</span>
@@ -28,7 +29,7 @@
             </span>
           </summary>
           <div class="nav-sublist" aria-label="Anime sections">
-            <a class="nav-subitem {% if active_page == 'anime_list' %}active{% endif %}" href="{{ url_for('dashboard') }}"><span>Anime List</span><b data-sidebar-count="anime" {% if not sidebar_counts.anime %}hidden{% endif %}>{{ sidebar_counts.anime }}</b></a>
+            <a class="nav-subitem {% if active_page == 'anime_list' %}active{% endif %}" href="{{ url_for('anime_list') }}"><span>Anime List</span><b data-sidebar-count="anime" {% if not sidebar_counts.anime %}hidden{% endif %}>{{ sidebar_counts.anime }}</b></a>
             <a class="nav-subitem {% if active_page == 'anime_manual_selection' %}active{% endif %}" href="{{ url_for('manual_selection') }}"><span>Manual Selection</span><b class="nav-warning-badge" data-sidebar-count="manual_selection" {% if not sidebar_counts.manual_selection %}hidden{% endif %}>{{ sidebar_counts.manual_selection }}</b></a>
             <a class="nav-subitem {% if active_page == 'anime_metadata_verification' %}active{% endif %}" href="{{ url_for('metadata_verification') }}"><span>Metadata Review</span><b class="nav-warning-badge" data-sidebar-count="metadata_verification" {% if not sidebar_counts.metadata_verification %}hidden{% endif %}>{{ sidebar_counts.metadata_verification }}</b></a>
           </div>
@@ -81,6 +82,53 @@
       </div>
     </main>
     <script>
+      const nyaarrListCache = (() => {
+        const prefix = 'nyaarr:list-cache:v1:';
+        const ttlMs = 120000;
+
+        function key(url) {
+          return `${prefix}${new URL(url, window.location.origin).href}`;
+        }
+
+        function get(url) {
+          try {
+            const cached = JSON.parse(window.sessionStorage.getItem(key(url)) || 'null');
+            if (!cached || typeof cached.savedAt !== 'number') return null;
+            return {...cached, fresh: Date.now() - cached.savedAt < ttlMs};
+          } catch (error) {
+            return null;
+          }
+        }
+
+        function set(url, value) {
+          try {
+            window.sessionStorage.setItem(key(url), JSON.stringify({savedAt: Date.now(), value}));
+          } catch (error) {
+            clear();
+          }
+        }
+
+        function clear() {
+          try {
+            Object.keys(window.sessionStorage)
+              .filter((item) => item.startsWith(prefix))
+              .forEach((item) => window.sessionStorage.removeItem(item));
+          } catch (error) {
+            // Browsers can disable session storage; normal loading still works.
+          }
+        }
+
+        return {get, set, clear};
+      })();
+      window.nyaarrListCache = nyaarrListCache;
+
+      document.addEventListener('submit', (event) => {
+        const form = event.target;
+        if (form instanceof HTMLFormElement && form.method.toLowerCase() === 'post') {
+          nyaarrListCache.clear();
+        }
+      }, true);
+
       async function refreshSettingsMissingBadge() {
         const badge = document.getElementById("settings-missing-badge");
         if (!badge) {
@@ -185,16 +233,35 @@
         scheduleRootScanSidebarWatcher(intervalMs);
       };
 
+      function renderAsyncPageHtml(target, html) {
+        target.innerHTML = html;
+        target.querySelectorAll('script').forEach((oldScript) => {
+          const script = document.createElement('script');
+          for (const attribute of oldScript.attributes) {
+            script.setAttribute(attribute.name, attribute.value);
+          }
+          script.textContent = oldScript.textContent;
+          oldScript.replaceWith(script);
+        });
+      }
+
       async function loadAsyncPageContent() {
         const shell = document.querySelector("[data-async-page-url]");
         const target = document.getElementById("async-page-content");
         if (!shell || !target) return;
+        const cachedPage = nyaarrListCache.get(shell.dataset.asyncPageUrl);
+        if (cachedPage) {
+          renderAsyncPageHtml(target, cachedPage.value);
+          await refreshSidebarCounts();
+          if (cachedPage.fresh) return;
+        }
         try {
           const response = await fetch(shell.dataset.asyncPageUrl, {
             headers: {"Accept": "text/html", "X-Requested-With": "fetch"}
           });
           if (!response.ok) throw new Error(`Page data request failed with ${response.status}`);
           const html = await response.text();
+          nyaarrListCache.set(shell.dataset.asyncPageUrl, html);
           target.innerHTML = html;
           target.querySelectorAll("script").forEach((oldScript) => {
             const script = document.createElement("script");

@@ -54,8 +54,11 @@ Page renders are passive for external providers. Dashboard, Calendar, Manual Sel
 - Dispatch retries are throttled by `NYAARR_TORRENT_DISPATCH_RETRY_SECONDS`, defaulting to 5 minutes, so a temporarily unavailable qBittorrent client does not create a new notice every minute.
 ## Routes
 
-- /: Anime dashboard, shown as Anime > Anime List in the sidebar.
-- /anime/list: Anime List alias for the dashboard.
+- `/:` Dashboard, shown as its own top-level sidebar item. It contains attention
+  and setup summaries, library statistics, active downloads, recent anime, and
+  the existing library/health sections.
+- `/anime/list`: Focused Anime List containing only anime cards followed by
+  Health. It does not render Dashboard summaries or operational widgets.
 - `/anime/<library_id>`: Anime detail page with stored metadata, library state, and a Sonarr-style episode table derived from local files and qBittorrent queue records. A cog button at the far right of the title opens the AniList ID edit dialog for manual metadata correction. When an anime folder contains explicit season subfolders such as `Season 1` plus `Specials`, local TV episode rows and completion counts use the selected season folder instead of allowing specials to claim TV episode numbers.
 - /anime/manual-selection: Low-confidence torrent candidates requiring user selection.
 - /anime/manual-selection/select: POST endpoint that queues a user-selected candidate through the torrent safety flow.
@@ -88,7 +91,11 @@ Counts shown:
 
 ## Anime Menu
 
-The shared sidebar Anime item is a native dropdown with Anime List and Manual Selection. Anime List renders the existing dashboard. Manual Selection lists anime flagged by the confidence scorer and allows a user-selected candidate to be queued manually. Numeric indicators are used consistently; zero-value indicators are hidden.
+Dashboard is a top-level sidebar item. The separate Anime dropdown contains
+Anime List, Manual Selection, and Metadata Review. Anime List is the focused
+library/health view. Manual Selection lists anime flagged by the confidence
+scorer and allows a user-selected candidate to be queued manually. Numeric
+indicators are used consistently; zero-value indicators are hidden.
 ## Activity Menu
 
 The shared sidebar Activity item is a native dropdown like System. It contains Queued, History, and Blocked. The top-level Activity badge counts only active incomplete Nyaarr-tracked downloads. Dropdown menu items use numeric indicators instead of arrows. Zero-value indicators are hidden. When the Activity dropdown is open, the badge is visually hidden from Activity and shown beside Queued when the active download count is nonzero.
@@ -96,7 +103,15 @@ The shared sidebar Activity item is a native dropdown like System. It contains Q
 Activity queued and blocked tables use columns for anime name, episode number, date added, resolution, time left, progress, and actions where relevant. History removes time left, adds date completed, removes the normal settings-panel width cap, uses fixed column proportions across the full Activity page width, and keeps denser rows so more completed items are visible. History only includes completed/imported queues, so it does not contribute to the Activity count. Queued includes active flagged torrents with Allow and Reject actions. Blocked lists rejected flagged torrents from `ignored_torrents`, and also does not contribute to the Activity count.
 ## Dashboard Library Stats
 
-Anime List renders Health below the anime cards as a horizontal section. Anime List does not render Flagged Torrents or Torrent Finder side-panel sections; torrent review and candidate assignment belong to Activity and Manual Selection surfaces. Anime card episode counts render as centered grey pills with light text for contrast. The dashboard stat row shows `Total Anime`, `Completed`, `Airing`, and `Not Yet Aired`. `Total Anime` uses a distinct dark-blue stat tone so it does not blend into the dark panel background. `Completed` follows the completed tag tone, `Airing` follows the airing tag tone, and `Not Yet Aired` follows the upcoming tag tone. The old `Monitored` stat was removed because membership in the local anime list already means the title is monitored.
+Anime List renders only anime cards and Health below them. Torrent review and
+candidate assignment belong to Activity and Manual Selection. Anime card
+episode counts render as centered grey pills with light text for contrast. The
+Dashboard stat row shows `Total Anime`, `Completed`, `Airing`, and `Not Yet
+Aired`. `Total Anime` uses a distinct dark-blue stat tone so it does not blend
+into the dark panel background. `Completed` follows the completed tag tone,
+`Airing` follows the airing tag tone, and `Not Yet Aired` follows the upcoming
+tag tone. The old `Monitored` stat was removed because membership in the local
+anime list already means the title is monitored.
 ## Templates
 
 - `nyaarr/templates/base.html`: Shared shell, sidebar, topbar, global search, Add Anime action, async content loader, async sidebar count refresh, and periodic Settings badge refresh.

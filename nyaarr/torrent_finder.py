@@ -269,6 +269,7 @@ def search_nyaa_rss(query: str) -> list[NyaaRelease]:
         try:
             with timed('provider.nyaa_rss'):
                 releases = _fetch_nyaa_rss(query)
+            releases = [release for release in releases if not _is_dub_release(release)]
             if NYAA_RSS_CACHE_TTL_SECONDS > 0 and NYAA_RSS_CACHE_MAX_ENTRIES != 0:
                 with _RSS_CACHE_LOCK:
                     _prune_rss_cache_locked(now)
@@ -749,6 +750,7 @@ def _select_candidates(
         release
         for release in releases
         if release["release_kind"] in {"batch", "episode"}
+        and not _is_dub_release(release)
         and _quality_allows_release(release, quality_preference)
     ], quality_preference)
     if not useful_releases:
@@ -816,6 +818,7 @@ def _episode_releases_from_consistent_group(
         ranked_groups.append(
             (
                 _group_preference_rank(group, preferred_groups),
+                max(_audio_preference_rank(release) for release in releases),
                 max(_release_group_source_rank(release) for release in releases),
                 missing_episodes.issubset(covered) if missing_episodes else True,
                 len(covered_missing),
@@ -828,8 +831,8 @@ def _episode_releases_from_consistent_group(
     if not ranked_groups:
         return []
 
-    ranked_groups.sort(reverse=True, key=lambda item: item[:7])
-    return _sort_episode_releases(ranked_groups[0][7])
+    ranked_groups.sort(reverse=True, key=lambda item: item[:8])
+    return _sort_episode_releases(ranked_groups[0][8])
 
 
 def _same_subber_batch_fallback_releases(
@@ -966,6 +969,7 @@ def _preferred_group(releases: list[dict[str, Any]], preferred_groups: list[str]
     ranked_groups = [
         (
             _group_preference_rank(group, preferred_groups),
+            max(_audio_preference_rank(release) for release in group_releases),
             max(_release_group_source_rank(release) for release in group_releases),
             len(group_releases),
             sum(int(release.get("seeders") or 0) for release in group_releases),
@@ -973,8 +977,8 @@ def _preferred_group(releases: list[dict[str, Any]], preferred_groups: list[str]
         )
         for group, group_releases in groups.items()
     ]
-    ranked_groups.sort(reverse=True, key=lambda item: item[:5])
-    return ranked_groups[0][4]
+    ranked_groups.sort(reverse=True, key=lambda item: item[:6])
+    return ranked_groups[0][5]
 
 
 def _group_preference_rank(group: str, preferred_groups: list[str] | None = None) -> int:
@@ -1036,6 +1040,7 @@ def _sort_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         releases,
         key=lambda release: (
+            _audio_preference_rank(release),
             _release_group_source_rank(release),
             release.get("seeders", 0),
             release.get("downloads", 0),
@@ -1050,6 +1055,7 @@ def _sort_episode_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any
         releases,
         key=lambda release: (
             release.get("episode") or 0,
+            -_audio_preference_rank(release),
             -_release_group_source_rank(release),
             -int(release.get("seeders") or 0),
             -int(release.get("downloads") or 0),
@@ -1065,10 +1071,12 @@ def _best_release_per_episode(releases: list[dict[str, Any]]) -> list[dict[str, 
             continue
         existing = best_by_episode.get(episode)
         if existing is None or (
+            _audio_preference_rank(release),
             _release_group_source_rank(release),
             int(release.get("seeders") or 0),
             int(release.get("downloads") or 0),
         ) > (
+            _audio_preference_rank(existing),
             _release_group_source_rank(existing),
             int(existing.get("seeders") or 0),
             int(existing.get("downloads") or 0),
@@ -1149,6 +1157,41 @@ def _torrent_season_number(title: str) -> int | None:
     if re.search(r"\b(?:iii|3rd)\b", normalized):
         return 3
     return None
+
+
+def _is_dub_release(release: dict[str, Any]) -> bool:
+    parsed = release.get('parsed') if isinstance(release.get('parsed'), dict) else {}
+    values = [
+        release.get('raw_title'),
+        release.get('title'),
+        release.get('audio'),
+        release.get('language'),
+        parsed.get('audio'),
+        parsed.get('language'),
+    ]
+    marker = re.compile(
+        r'(?<![a-z0-9])(?:dub(?:bed)?|eng(?:lish)?[ ._-]+dub(?:bed)?|english[ ._-]+audio)(?![a-z0-9])',
+        flags=re.IGNORECASE,
+    )
+    return any(marker.search(str(value or '')) for value in values)
+
+
+def _audio_preference_rank(release: dict[str, Any]) -> int:
+    parsed = release.get('parsed') if isinstance(release.get('parsed'), dict) else {}
+    value = ' '.join(
+        str(item or '')
+        for item in (
+            release.get('raw_title'),
+            release.get('title'),
+            release.get('audio'),
+            parsed.get('audio'),
+        )
+    )
+    if re.search(r'(?<![a-z0-9])multi[ ._-]+audio(?![a-z0-9])', value, flags=re.IGNORECASE):
+        return 0
+    if re.search(r'(?<![a-z0-9])dual[ ._-]+audio(?![a-z0-9])', value, flags=re.IGNORECASE):
+        return 1
+    return 2
 
 
 def _release_group(title: str) -> str:

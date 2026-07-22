@@ -210,6 +210,74 @@ def test_dispatch_release_selection_skips_episode_candidates_that_are_no_longer_
 
 
 
+@pytest.mark.parametrize(
+    'marker',
+    ['Dub', 'Dubbed', 'English Dub', 'ENG-DUB', 'French Dub', 'Spanish-Dubbed', 'English Audio'],
+)
+def test_dubbed_release_markers_are_excluded(marker: str) -> None:
+    dubbed = release('DubGroup', 1)
+    dubbed['title'] = f'[DubGroup] Petals of Reincarnation - 01 [1080p] [{marker}]'
+
+    assert torrent_finder._is_dub_release(dubbed)
+    assert torrent_finder._select_candidates([dubbed], anime(progress_target=1)) == []
+
+
+@pytest.mark.parametrize('marker', ['English Subs', 'Multi-Subs', 'Dubious Quality Check'])
+def test_subtitle_and_non_dub_words_are_not_excluded(marker: str) -> None:
+    subtitled = release('SubGroup', 1)
+    subtitled['title'] = f'[SubGroup] Petals of Reincarnation - 01 [1080p] [{marker}]'
+
+    assert not torrent_finder._is_dub_release(subtitled)
+    assert torrent_finder._select_candidates([subtitled], anime(progress_target=1))
+
+
+def test_stored_dubbed_candidates_are_removed_before_manual_selection() -> None:
+    subtitled = release('SubGroup', 1)
+    dubbed = release('DubGroup', 1)
+    dubbed['title'] += ' [English Dub]'
+
+    filtered = app_state._filter_ignored_torrent_candidates({}, [dubbed, subtitled])
+
+    assert filtered == [subtitled]
+
+
+@pytest.mark.parametrize(
+    ('marker', 'rank'),
+    [('Dual Audio', 1), ('Dual-Audio', 1), ('Multi Audio', 0), ('Multi-Audio', 0)],
+)
+def test_dual_and_multi_audio_remain_eligible_with_lower_rank(marker: str, rank: int) -> None:
+    candidate = release('AudioGroup', 1)
+    candidate['title'] += f' [{marker}]'
+
+    assert not torrent_finder._is_dub_release(candidate)
+    assert torrent_finder._audio_preference_rank(candidate) == rank
+    assert torrent_finder._select_candidates([candidate], anime(progress_target=1))
+
+
+def test_japanese_or_unmarked_audio_beats_dual_audio_despite_lower_seed_count() -> None:
+    standard = release('SameGroup', 1, seeders=5)
+    dual_audio = release('SameGroup', 1, seeders=500)
+    dual_audio['title'] += ' [Dual Audio]'
+
+    selected = torrent_finder._select_candidates([dual_audio, standard], anime(progress_target=1))
+
+    assert selected == [standard]
+
+
+def test_final_dispatch_prefers_standard_audio_over_multi_audio() -> None:
+    database = {'settings': {'torrent_confidence_threshold': 0, 'preferred_subbers': []}, 'ignored_torrents': []}
+    standard = release('SameGroup', 1, seeders=5)
+    multi_audio = release('SameGroup', 1, seeders=500)
+    multi_audio['title'] += ' [Multi Audio]'
+
+    selected = app_state._selected_download_release(
+        [multi_audio, standard], database, anime(progress_target=1)
+    )
+
+    assert selected is not None
+    assert selected['title'] == standard['title']
+
+
 def test_rezero_style_ordinal_season_and_episode_title_parse() -> None:
     title = "[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 11 [1080p][Multiple Subtitle][ABC123].mkv"
 

@@ -294,6 +294,18 @@
           rowsBody.replaceChildren(...rows.map(buildRow));
         }
 
+        function applyCachedActivity(model) {
+          setText('[data-activity-label]', model.label);
+          setText('[data-activity-panel-label]', model.label);
+          setText('[data-activity-view]', model.label);
+          setText('[data-activity-description]', model.description);
+          for (const [key, value] of Object.entries(model.counts || {})) {
+            setText(`[data-activity-count='${key}']`, String(value));
+          }
+          renderRows(model.rows || [], model.label);
+          if (refreshStatus) refreshStatus.hidden = true;
+        }
+
         async function refreshActivity() {
           if (inFlight || document.hidden) return;
           inFlight = true;
@@ -303,6 +315,7 @@
             });
             if (!response.ok) throw new Error(`Activity request failed with ${response.status}`);
             const model = await response.json();
+            if (window.nyaarrListCache) window.nyaarrListCache.set(refreshUrl, model);
             setText("[data-activity-label]", model.label);
             setText("[data-activity-panel-label]", model.label);
             setText("[data-activity-view]", model.label);
@@ -327,7 +340,9 @@
           }
         }
 
-        refreshActivity();
+        const cachedActivity = window.nyaarrListCache && window.nyaarrListCache.get(refreshUrl);
+        if (cachedActivity) applyCachedActivity(cachedActivity.value);
+        if (!cachedActivity || !cachedActivity.fresh) refreshActivity();
         if (intervalMs > 0) window.setInterval(refreshActivity, Math.max(intervalMs, 1000));
         document.addEventListener("visibilitychange", () => {
           if (!document.hidden) refreshActivity();

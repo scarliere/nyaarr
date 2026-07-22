@@ -59,6 +59,14 @@ def test_dense_table_controls_keep_primary_actions_visible() -> None:
     assert "log-row-detail" in logs
 
 
+def test_column_headers_remain_attached_to_the_table_header_row() -> None:
+    css = _source('nyaarr/static/css/app.css')
+
+    assert '.activity-table th {\n    position: sticky;' not in css
+    assert '.anime-episode-table th:first-child,' in css
+    assert '.manual-selection-table th:first-child {' in css
+
+
 def test_global_density_and_accessibility_css_is_present() -> None:
     css = _source("nyaarr/static/css/app.css")
     base = _source("nyaarr/templates/base.html")

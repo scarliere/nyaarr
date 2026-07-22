@@ -39,6 +39,7 @@ from .metadata import (
 from .qbittorrent_client import QBittorrentError, client_from_settings
 from .persistence import REVISION_FIELD, SQLiteStateRepository
 from .torrent_finder import _title_matches as torrent_title_matches
+from .torrent_finder import _audio_preference_rank, _is_dub_release
 from .torrent_finder import episode_number_from_title, find_torrents_for_anime, release_group_from_title
 
 
@@ -294,6 +295,14 @@ def dashboard_page_model() -> dict[str, Any]:
         'anime_cards': library,
         'stats': library_stats(library),
         'dashboard': dashboard_model(database),
+        'revision': int(database.get(REVISION_FIELD) or 0),
+    }
+
+
+def anime_list_page_model() -> dict[str, Any]:
+    database = _read_user_database()
+    return {
+        'anime_cards': database['anime'],
         'revision': int(database.get(REVISION_FIELD) or 0),
     }
 
@@ -633,12 +642,12 @@ def _refresh_torrent_search(anime: dict[str, Any], database: dict[str, Any] | No
 
 def _filter_ignored_torrent_candidates(database: dict[str, Any], candidates: list[Any]) -> list[dict[str, Any]]:
     ignored_keys = _ignored_torrent_keys(database)
-    if not ignored_keys:
-        return [candidate for candidate in candidates if isinstance(candidate, dict)]
     return [
         candidate
         for candidate in candidates
-        if isinstance(candidate, dict) and _torrent_ignore_key(candidate) not in ignored_keys
+        if isinstance(candidate, dict)
+        and not _is_dub_release(candidate)
+        and _torrent_ignore_key(candidate) not in ignored_keys
     ]
 
 
@@ -3850,10 +3859,11 @@ def _selected_download_releases(
     return [best_by_episode[episode] for episode in sorted(best_by_episode)]
 
 
-def _candidate_selection_sort_key(candidate: dict[str, Any], database: dict[str, Any], anime: dict[str, Any] | None = None) -> tuple[int, int, int, int, int]:
+def _candidate_selection_sort_key(candidate: dict[str, Any], database: dict[str, Any], anime: dict[str, Any] | None = None) -> tuple[int, int, int, int, int, int]:
     return (
         _candidate_locked_release_group_rank(candidate, anime or {}),
         _candidate_preferred_subber_rank(candidate, database),
+        _audio_preference_rank(candidate),
         _candidate_release_group_source_rank(candidate),
         int(candidate.get("confidence") or 0),
         int(candidate.get("seeders") or 0),

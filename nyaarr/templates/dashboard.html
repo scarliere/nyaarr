@@ -1,8 +1,9 @@
 {% extends layout_template|default("base.html") %}
 
-{% block title %}Nyaarr - Home{% endblock %}
+{% block title %}Nyaarr - {% if dashboard_mode|default(false) %}Dashboard{% else %}Anime List{% endif %}{% endblock %}
 
 {% block content %}
+  {% if dashboard_mode|default(false) %}
   <section class="hero dashboard-hero">
     <div>
       <p class="eyebrow">Home</p>
@@ -91,7 +92,7 @@
     <section class="anime-panel dashboard-panel">
       <div class="section-heading compact">
         <h2>Recent library</h2>
-        <a class="button" href="{{ url_for('dashboard') }}#anime-library">View Library</a>
+        <a class="button" href="{{ url_for('anime_list') }}">View Library</a>
       </div>
       <div class="recent-anime-list">
         {% for anime in dashboard.recent_anime %}
@@ -112,6 +113,7 @@
       </div>
     </section>
   </section>
+  {% endif %}
 
   <section id="anime-library" class="content-grid anime-content-grid">
     <div class="anime-panel">
