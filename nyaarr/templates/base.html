@@ -348,7 +348,17 @@
             if (response.status === 304) return uiBootstrapResult;
             if (!response.ok) return null;
             uiBootstrapEtag = response.headers.get('ETag') || '';
-            uiBootstrapResult = await response.json();
+            const previousRevision = Number(uiBootstrapResult && uiBootstrapResult.revision || 0);
+            const nextResult = await response.json();
+            const nextRevision = Number(nextResult && nextResult.revision || 0);
+            if (previousRevision && nextRevision && previousRevision !== nextRevision) {
+              nyaarrListCache.clear();
+              window.setTimeout(() => {
+                const shell = document.querySelector('[data-async-page-url]');
+                if (shell && !document.hidden) loadAsyncPageContent();
+              }, 0);
+            }
+            uiBootstrapResult = nextResult;
             nyaarrListCache.set("{{ url_for('ui_bootstrap_data') }}", uiBootstrapResult);
             return uiBootstrapResult;
           } catch (error) {

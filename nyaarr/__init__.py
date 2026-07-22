@@ -32,6 +32,7 @@ from .app_state import (
     event_log_rows,
     create_superadmin_account,
     has_superadmin_account,
+    hard_reset_queued_torrents,
     load_or_create_session_secret,
     library_stats,
     manual_selection_model,
@@ -419,6 +420,12 @@ def create_app() -> Flask:
     @app.get("/activity/<section>/data")
     def activity_data(section: str = "queued"):
         return jsonify(activity_model(section))
+
+    @app.post("/activity/queued/hard-reset")
+    def hard_reset_queued_torrents_route():
+        selected = request.form.getlist("selection")
+        success, message = hard_reset_queued_torrents(selected) if selected else hard_reset_queued_torrents()
+        return redirect(url_for("activity", section="queued", reset="1" if success else "0", message=message))
 
     @app.get("/add")
     def add_anime():

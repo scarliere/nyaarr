@@ -32,6 +32,13 @@ view. Entries are scoped to the current browser tab and disappear when its
 session ends. Activity polling continues after restoration, so download
 progress can update without returning to a loading state.
 
+The one-minute UI bootstrap poll carries the database revision. When background
+reconciliation changes that revision, cached fragments are invalidated and the
+currently visible asynchronous page is refreshed while the tab is visible.
+This allows Anime List and Anime Detail episode states to reflect completed
+downloads without waiting for the two-minute cache TTL or requiring a hard
+refresh.
+
 The cache is a responsiveness layer, not persistent application storage. A
 page older than two minutes is refreshed from the server.
 

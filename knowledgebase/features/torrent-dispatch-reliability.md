@@ -52,6 +52,29 @@ needed and are started immediately. Missing file metadata remains in Safety
 check for reconciliation; flagged content never starts. The user's Add Paused
 setting still takes precedence.
 
+## Manual episode release-group learning
+
+Manual magnet display names are preserved instead of being replaced by a
+generic `[Manual]` title. The release group is parsed from that title, or from
+the inspected torrent media filenames when a URL does not expose a title.
+After the manual episode is submitted, Nyaarr locks that group for the anime,
+immediately refreshes the remaining missing-episode search, and dispatches the
+bounded set of same-group matches. Activity treats all `wanted_episodes` in an
+active queue as covered, preventing a duplicate `No torrent selected` row.
+
+## Queued hard reset
+
+The Queued page has a confirmation-protected Hard Reset action. It preserves
+history and queue records that are still visible in qBittorrent, archives stale
+app-only active records, clears candidates/manual-intervention timestamps for
+every monitored anime with missing episodes, and enqueues a priority-100
+external refresh. Discovery and dispatch still use the normal per-pass caps, so
+a large reset drains proactively without flooding Nyaa or qBittorrent. Existing
+release-group locks and aliases such as Kill Blue / Kill Ao are preserved.
+Each Queued row also has a checkbox. Reset Selected applies the same safe reset
+rules only to the chosen anime/episode rows, while Hard Reset All retains the
+full-library behavior.
+
 ## Resource impact and limitations
 
 No worker or cache was added. The local maintenance pass may make one extra

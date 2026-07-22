@@ -2985,6 +2985,142 @@ def test_submit_manual_magnet_refreshes_qbittorrent_queue_immediately(monkeypatc
     assert refreshes == [database]
     assert writes == [database]
 
+
+def test_manual_magnet_learns_subber_and_searches_remaining_episodes_immediately(monkeypatch) -> None:
+    database = manual_database()
+    anime = database["anime"][0]
+    anime["completion"] = {
+        "expected_episodes": 6,
+        "local_episodes": 4,
+        "progress_target": 6,
+        "missing_episodes": 2,
+    }
+    anime["torrent_search"] = {"candidates": [], "notices": []}
+    magnet = (
+        "magnet:?xt=urn:btih:ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+        "&dn=%5BSubsPlease%5D%20Petals%20of%20Reincarnation%20-%2005%20%281080p%29.mkv"
+    )
+    dispatches = []
+    searches = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: None)
+
+    def fake_dispatch(db, item, forced_release=None):
+        dispatches.append(forced_release)
+        if forced_release is not None:
+            item["download_queue"] = {
+                "torrent_url": forced_release["torrent_url"],
+                "status": "submitted",
+                "episode": forced_release["episode"],
+            }
+
+    def fake_search(item, db=None):
+        searches.append(app_state._locked_release_group(item))
+        item["torrent_search"] = {"candidates": [auto_candidate(6, group="SubsPlease")], "notices": []}
+
+    monkeypatch.setattr(app_state, "_maybe_dispatch_torrent", fake_dispatch)
+    monkeypatch.setattr(app_state, "_refresh_torrent_search", fake_search)
+
+    success, _message = app_state.assign_manual_torrent_url("anime-1", magnet, "5")
+
+    assert success is True
+    assert app_state._locked_release_group(anime) == "SubsPlease"
+    assert searches == ["SubsPlease"]
+    assert len(dispatches) == 2
+    assert dispatches[0]["title"].startswith("[SubsPlease]")
+    assert dispatches[1] is None
+
+
+def test_activity_batch_queue_covers_all_wanted_episode_rows() -> None:
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    anime["download_queues"] = [{
+        "status": "submitted",
+        "release_kind": "batch",
+        "wanted_episodes": [1, 2, 3],
+        "title": "Petals batch",
+    }]
+    anime["download_queue"] = anime["download_queues"][0]
+
+    rows = app_state._activity_queued_rows(database)
+
+    assert len(rows) == 1
+    assert rows[0]["episode"] == "1-3"
+    assert all(row["title"] != "No torrent selected yet" for row in rows)
+
+
+def test_hard_reset_queued_torrents_preserves_client_visible_and_requeues_discovery(monkeypatch) -> None:
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    anime["torrent_manual_selection"] = {"required": True, "intervention_type": "no_candidates"}
+    anime["torrent_dispatch_attempted_at"] = "2026-07-22T00:00:00+00:00"
+    anime["download_queues"] = [
+        {"status": "downloading", "hash": "visible-hash", "episode": 1, "title": "Visible"},
+        {"status": "error", "hash": "stale-hash", "episode": 2, "title": "Stale"},
+        {"status": "imported", "hash": "history-hash", "episode": 3, "title": "History"},
+    ]
+    anime["download_queue"] = anime["download_queues"][0]
+    writes = []
+    jobs = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(app_state, "_download_client_existing_snapshot", lambda db: {"keys": {"hash:visible-hash"}, "episodes_by_library_id": {}})
+    monkeypatch.setattr(app_state, "_archive_download_queues", lambda item, queues: None)
+    monkeypatch.setattr("nyaarr.maintenance.enqueue_job", lambda job_type, **kwargs: jobs.append((job_type, kwargs)) or "job")
+
+    success, message = app_state.hard_reset_queued_torrents()
+
+    assert success is True
+    assert "cleared 1 stale queue record" in message
+    assert [queue["hash"] for queue in anime["download_queues"]] == ["visible-hash", "history-hash"]
+    assert anime["torrent_manual_selection"] == {"required": False}
+    assert anime["torrent_search"]["candidates"] == []
+    assert anime["torrent_search"]["checked_at"] == ""
+    assert "torrent_dispatch_attempted_at" not in anime
+    assert jobs[0][0] == "external_refresh"
+    assert jobs[0][1]["priority"] == 100
+    assert writes == [database]
+
+
+def test_hard_reset_queued_torrents_preserves_client_visible_and_requeues_discovery(monkeypatch) -> None:
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    anime["torrent_manual_selection"] = {"required": True, "intervention_type": "no_candidates"}
+    anime["torrent_dispatch_attempted_at"] = "2026-07-22T00:00:00+00:00"
+    anime["download_queues"] = [
+        {"status": "downloading", "hash": "visible-hash", "episode": 1, "title": "Visible"},
+        {"status": "error", "hash": "stale-hash", "episode": 2, "title": "Stale"},
+        {"status": "imported", "hash": "history-hash", "episode": 3, "title": "History"},
+    ]
+    anime["download_queue"] = anime["download_queues"][0]
+    writes = []
+    jobs = []
+
+    monkeypatch.setattr(app_state, "_read_user_database", lambda: database)
+    monkeypatch.setattr(app_state, "_write_user_database", lambda db: writes.append(db))
+    monkeypatch.setattr(
+        app_state,
+        "_download_client_existing_snapshot",
+        lambda db: {"keys": {"hash:visible-hash"}, "episodes_by_library_id": {}},
+    )
+    monkeypatch.setattr(app_state, "_archive_download_queues", lambda item, queues: None)
+    monkeypatch.setattr("nyaarr.maintenance.enqueue_job", lambda job_type, **kwargs: jobs.append((job_type, kwargs)) or "job")
+
+    success, message = app_state.hard_reset_queued_torrents()
+
+    assert success is True
+    assert "cleared 1 stale queue record" in message
+    assert [queue["hash"] for queue in anime["download_queues"]] == ["visible-hash", "history-hash"]
+    assert anime["torrent_manual_selection"] == {"required": False}
+    assert anime["torrent_search"]["candidates"] == []
+    assert anime["torrent_search"]["checked_at"] == ""
+    assert "torrent_dispatch_attempted_at" not in anime
+    assert jobs[0][0] == "external_refresh"
+    assert jobs[0][1]["priority"] == 100
+    assert writes == [database]
+
 def test_anime_detail_model_builds_sonarr_style_episode_rows(monkeypatch, tmp_path) -> None:
     media = tmp_path / "Petals.of.Reincarnation.S01E01.1080p.mkv"
     media.write_bytes(b"media")

@@ -3220,6 +3220,17 @@ h1 {
   }
 }
 
+.activity-reset-actions,
+.activity-select-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.activity-reset-actions form { margin: 0; }
+.activity-select-row { cursor: pointer; white-space: nowrap; }
+.activity-select-row input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+
 .anime-detail-loading-hero {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);

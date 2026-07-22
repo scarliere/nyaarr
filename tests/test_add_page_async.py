@@ -358,6 +358,28 @@ def test_settings_root_scan_starts_global_sidebar_watcher(monkeypatch) -> None:
     assert b'window.refreshSidebarCounts' in response.data
 
 
+def test_queued_activity_has_confirmed_hard_reset_route(monkeypatch) -> None:
+    monkeypatch.setattr(nyaarr, "start_periodic_maintenance", lambda: None)
+    monkeypatch.setattr(nyaarr, "sidebar_counts", _sidebar_counts)
+    calls = []
+    monkeypatch.setattr(nyaarr, "hard_reset_queued_torrents", lambda: calls.append(True) or (True, "Reset queued torrents."))
+    app = nyaarr.create_app()
+    app.config.update(TESTING=True)
+    client = _authenticated_client(app)
+
+    page = client.get("/activity/queued/page-data")
+    response = client.post("/activity/queued/hard-reset")
+
+    assert page.status_code == 200
+    assert b">Reset Selected</button>" in page.data
+    assert b">Hard Reset All</button>" in page.data
+    assert b'checkbox.name = "selection"' in page.data
+    assert b"Existing torrents visible in qBittorrent will be preserved" in page.data
+    assert response.status_code == 302
+    assert calls == [True]
+    assert "/activity/queued?" in response.headers["Location"]
+
+
 def test_shared_list_pages_use_session_cache_before_refetching() -> None:
     root = Path(__file__).resolve().parents[1]
     base = (root / 'nyaarr' / 'templates' / 'base.html').read_text(encoding='utf-8')
@@ -368,6 +390,8 @@ def test_shared_list_pages_use_session_cache_before_refetching() -> None:
     assert 'nyaarr:list-cache:v1:' in base
     assert 'window.sessionStorage' in base
     assert 'const maxEntries = 24;' in base
+    assert 'previousRevision !== nextRevision' in base
+    assert "if (shell && !document.hidden) loadAsyncPageContent();" in base
     assert 'if (cachedPage.fresh) return;' in base
     assert 'nyaarrListCache.clear();' in base
     assert 'const cacheKey = `nyaarr:list-cache:v1:${bootstrapUrl}`;' in base

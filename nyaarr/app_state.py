@@ -1939,12 +1939,14 @@ def assign_manual_torrent_url(library_id: str, torrent_link: str, episode: str =
     score, reasons = _torrent_candidate_confidence(release, database, anime)
     release["confidence"] = max(score, _torrent_confidence_threshold(database))
     release["confidence_reasons"] = reasons + ["provided manually"]
+    _set_release_group_lock_from_release(anime, release, "manual")
     torrent_search = anime.setdefault("torrent_search", {})
     candidates = torrent_search.setdefault("candidates", [])
     if isinstance(candidates, list) and all(_torrent_ignore_key(candidate) != _torrent_ignore_key(release) for candidate in candidates if isinstance(candidate, dict)):
         candidates.insert(0, release)
     _maybe_dispatch_torrent(database, anime, forced_release=release)
     _refresh_manual_dispatch_queue(database, anime, release)
+    _search_and_dispatch_locked_group(database, anime)
     _reopen_manual_selection_for_remaining_candidates(database, anime)
     _record_event(database, "torrent", f"User submitted manual torrent link for {anime.get('title', 'anime')}.", anime, release)
     _write_user_database(database)
@@ -1990,6 +1992,15 @@ def _refresh_manual_dispatch_queue(database: dict[str, Any], anime: dict[str, An
     if not any(queue.get("torrent_url") == release_url for queue in _download_queue_items(anime)):
         return
     _refresh_download_queue(database)
+
+
+def _search_and_dispatch_locked_group(database: dict[str, Any], anime: dict[str, Any]) -> None:
+    locked_group = _locked_release_group(anime)
+    if not locked_group or not _missing_episode_numbers(anime):
+        return
+    _refresh_torrent_search(anime, database)
+    _maybe_dispatch_torrent(database, anime)
+    _append_torrent_notice(anime, f"Searched remaining missing episodes using locked release group {locked_group}.")
 
 
 def reject_manual_torrent(library_id: str, selection_key: str) -> tuple[bool, str]:
@@ -2082,6 +2093,75 @@ def activity_model(section: str) -> dict[str, Any]:
         "has_more": len(selected_rows) > page_size,
         "counts": {key: len(value) for key, value in rows.items()},
     }
+
+
+def hard_reset_queued_torrents(selections: list[str] | None = None) -> tuple[bool, str]:
+    database = _read_user_database()
+    selected_rows: dict[str, set[str]] = {}
+    for selection in selections or []:
+        library_id, separator, episode_label = str(selection).partition("|")
+        if separator and library_id and episode_label:
+            selected_rows.setdefault(library_id, set()).add(episode_label)
+    selected_mode = selections is not None
+    if selected_mode and not selected_rows:
+        return False, "Select at least one queued episode to reset."
+    snapshot = _download_client_existing_snapshot(database)
+    client_keys = snapshot.get("keys") if isinstance(snapshot.get("keys"), set) else set()
+    episodes_by_library_id = snapshot.get("episodes_by_library_id") if isinstance(snapshot.get("episodes_by_library_id"), dict) else {}
+    reset_anime = 0
+    cleared_queues = 0
+
+    for anime in database.get("anime", []):
+        if not isinstance(anime, dict) or anime.get("monitored") is False or not _missing_episode_numbers(anime):
+            continue
+        library_id = str(anime.get("library_id") or "")
+        if selected_mode and library_id not in selected_rows:
+            continue
+        selected_episode_labels = selected_rows.get(library_id, set())
+        client_episodes = episodes_by_library_id.get(library_id, set())
+        retained = []
+        removed = []
+        for queue in _download_queue_items(anime):
+            status = str(queue.get("status") or "")
+            episode = _int_value(queue.get("episode"))
+            visible = _queue_identity(queue) in client_keys or (episode is not None and episode in client_episodes)
+            selected_queue = not selected_mode or _activity_episode_label(queue) in selected_episode_labels
+            if not selected_queue or status in {"completed", "imported", "rejected", "superseded"} or visible:
+                retained.append(queue)
+            else:
+                removed.append(queue)
+        if removed:
+            _archive_download_queues(anime, removed)
+            cleared_queues += len(removed)
+        anime["download_queues"] = retained
+        _sync_primary_download_queue(anime, retained)
+        anime["torrent_search"] = {
+            "query": str(anime.get("title") or anime.get("original_title") or ""),
+            "strategy": "Hard reset queued for fresh torrent discovery",
+            "candidates": [],
+            "checked_at": "",
+            "notices": ["Queued state was hard-reset; fresh alias and release-group searches are pending."],
+        }
+        anime["torrent_manual_selection"] = {"required": False}
+        anime.pop("torrent_dispatch_attempted_at", None)
+        anime.pop("torrent_dispatch_backlog", None)
+        reset_anime += 1
+
+    if not reset_anime:
+        return False, "No monitored anime with pending episodes needed a reset."
+
+    scope_label = "selected queued rows" if selected_mode else "queued torrent state"
+    message = f"Hard-reset {scope_label} for {reset_anime} anime; cleared {cleared_queues} stale queue record(s)."
+    _record_event(database, "torrent", message)
+    _write_user_database(database)
+    from .maintenance import enqueue_job
+
+    enqueue_job(
+        "external_refresh",
+        idempotency_key=f"queued-hard-reset:{time.time_ns()}",
+        priority=100,
+    )
+    return True, message + " Fresh discovery and bounded dispatch were prioritized in the background."
 
 
 def anime_detail_model(library_id: str) -> dict[str, Any] | None:
@@ -2725,6 +2805,7 @@ def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: 
             episode = _int_value(queue.get("episode"))
             if episode is not None:
                 active_episodes.add(episode)
+            active_episodes.update(_queue_wanted_episode_numbers(queue))
             rows.append(_activity_row(anime, queue, include_completed=False))
         for episode in _missing_episode_numbers(anime):
             if episode not in active_episodes:
@@ -3015,7 +3096,10 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
                 queue["message"] = "Submitted to qBittorrent; waiting for the expected torrent hash to become visible."
             else:
                 _inspect_and_start_new_queue(database, client, anime, queue)
-            _set_release_group_lock_from_release(anime, release, 'queued')
+            release_group = str(release.get("release_group") or "")
+            queue_group = str(queue.get("release_group") or "")
+            lock_source = "torrent_files" if release_group in {"", "Unknown", "Manual"} and queue_group not in {"", "Unknown", "Manual"} else "queued"
+            _set_release_group_lock_from_release(anime, queue, lock_source)
             queues.append(queue)
             if release_key:
                 existing_keys.add(release_key)
@@ -4232,12 +4316,12 @@ def _manual_torrent_detail_url(link: str) -> str:
 
 def _manual_torrent_title(anime: dict[str, Any], episode: int | None, link: str) -> str:
     title = str(anime.get("title") or anime.get("original_title") or "Manual torrent").strip() or "Manual torrent"
-    if episode is not None:
-        return f"[Manual] {title} - {episode:02d}"
     if link.casefold().startswith("magnet:?"):
         display_names = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("dn", [])
         if display_names and display_names[0].strip():
             return display_names[0].strip()
+    if episode is not None:
+        return f"[Manual] {title} - {episode:02d}"
     return f"[Manual] {title}"
 
 def _set_release_group_lock_from_release(anime: dict[str, Any], release: dict[str, Any], source: str) -> None:
@@ -4431,6 +4515,15 @@ def _inspect_torrent_safety(client: Any, torrent_hash: str, queue: dict[str, Any
         queue["flagged_files"] = flagged_files
         queue["message"] = f"Flagged torrent: {len(flagged_files)} non-video or dangerous file(s) found."
         return "flagged"
+
+    detected_groups = [
+        release_group_from_title(Path(str(file_info.get("name") or "")).name)
+        for file_info in files
+        if Path(str(file_info.get("name") or "")).suffix.casefold() in MEDIA_EXTENSIONS
+    ]
+    detected_groups = [group for group in detected_groups if group not in {"", "Unknown", "Manual"}]
+    if detected_groups and str(queue.get("release_group") or "") in {"", "Unknown", "Manual"}:
+        queue["release_group"] = Counter(detected_groups).most_common(1)[0][0]
 
     if queue.get("autofill_from_torrent_files"):
         _autofill_queue_from_torrent_files(queue, files)
