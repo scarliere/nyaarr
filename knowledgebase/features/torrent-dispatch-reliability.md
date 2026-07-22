@@ -19,11 +19,12 @@ dispatch failures, and can be retried after the cooldown. Previously those
 responses could produce a false queued row with unknown ETA and no progress.
 
 An `Ok.` response is also only command acceptance. When Nyaa supplied an
-infohash, Nyaarr now polls qBittorrent briefly for that exact hash and creates
-the queue record only after it becomes visible. A non-visible hash is treated
-as a dispatch failure and retains the candidate for retry. Successful adds add
-one inexpensive local API read; failed adds use at most four reads over roughly
-1.5 seconds and do not consume persistent memory.
+infohash, Nyaarr polls qBittorrent briefly for that exact hash. Slower
+asynchronous URL ingestion is stored as `Submitted · awaiting client`, not as a
+false queued torrent or a dispatch failure. Reconciliation allows a 90-second
+visibility grace period (`NYAARR_TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS`),
+then returns a still-invisible submission to retry. Once visible, normal safety
+inspection and startup continue.
 
 ## Queued episode indicators
 

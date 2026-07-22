@@ -127,6 +127,9 @@ AIRING_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_AIRING_REFRESH_MAX_A
 PERIODIC_MAINTENANCE_INTERVAL_SECONDS = int(os.environ.get("NYAARR_PERIODIC_MAINTENANCE_INTERVAL_SECONDS", "60"))
 TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS = int(os.environ.get("NYAARR_TORRENT_SEARCH_REFRESH_MAX_AGE_SECONDS", str(PERIODIC_MAINTENANCE_INTERVAL_SECONDS)))
 TORRENT_DISPATCH_RETRY_SECONDS = int(os.environ.get("NYAARR_TORRENT_DISPATCH_RETRY_SECONDS", str(5 * 60)))
+TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS = int(
+    os.environ.get("NYAARR_TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS", "90")
+)
 MAX_TORRENT_SEARCHES_PER_TICK = int(os.environ.get("NYAARR_MAX_TORRENT_SEARCHES_PER_TICK", "2"))
 MAX_TORRENT_DISPATCHES_PER_ANIME_TICK = max(
     1, int(os.environ.get("NYAARR_MAX_TORRENT_DISPATCHES_PER_ANIME_TICK", "4"))
@@ -2263,7 +2266,7 @@ def _local_episode_file_map(anime: dict[str, Any]) -> dict[int, str]:
 def _episode_queue_map(anime: dict[str, Any]) -> dict[int, dict[str, Any]]:
     mapped: dict[int, dict[str, Any]] = {}
     for queue in _download_queue_items(anime):
-        if queue.get("status") not in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}:
+        if queue.get("status") not in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}:
             continue
         episode = _int_value(queue.get("episode"))
         if episode is not None and episode > 0:
@@ -2715,7 +2718,7 @@ def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: 
         active_episodes: set[int] = set()
         active_episodes.update(_download_client_queued_episodes(anime, client_snapshot))
         for queue in _download_queue_items(anime):
-            if queue.get("status") not in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}:
+            if queue.get("status") not in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}:
                 continue
             if _queue_episode_is_local(anime, queue):
                 continue
@@ -2831,6 +2834,7 @@ def _activity_row(
 
 def _activity_status_pill(status: str) -> tuple[str, str]:
     labels = {
+        "submitted": ("Submitted · awaiting client", "checking"),
         "queued": ("Checking client", "checking"),
         "pending_safety": ("Safety check", "checking"),
         "downloading": ("Downloading", "downloading"),
@@ -2991,7 +2995,7 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
             if release.get("release_kind") == "episode" and episode in queued_episodes:
                 continue
             dispatch_save_path = _dispatch_save_path(anime, release, root_folder)
-            client.add_url(
+            add_visible = client.add_url(
                 torrent_url,
                 save_path=dispatch_save_path,
                 category=category,
@@ -3006,7 +3010,11 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
                     release["infohash"] = discovered_hash
                     known_client_hashes.add(discovered_hash)
             queue = _download_queue_from_release(release, anime, client_settings, dispatch_save_path, missing_episodes)
-            _inspect_and_start_new_queue(database, client, anime, queue)
+            if add_visible is False:
+                queue["status"] = "submitted"
+                queue["message"] = "Submitted to qBittorrent; waiting for the expected torrent hash to become visible."
+            else:
+                _inspect_and_start_new_queue(database, client, anime, queue)
             _set_release_group_lock_from_release(anime, release, 'queued')
             queues.append(queue)
             if release_key:
@@ -3145,7 +3153,7 @@ def _cleanup_episode_queues_covered_by_batch(
 def _queue_cleans_up_episode_torrents(queue: dict[str, Any]) -> bool:
     if queue.get("release_kind") != "batch" and not queue.get("select_batch_files"):
         return False
-    return queue.get("status") in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}
+    return queue.get("status") in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}
 
 
 def _queue_is_active_episode_torrent(queue: dict[str, Any]) -> bool:
@@ -3153,7 +3161,7 @@ def _queue_is_active_episode_torrent(queue: dict[str, Any]) -> bool:
         return False
     if _int_value(queue.get("episode")) is None:
         return False
-    return queue.get("status") in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
+    return queue.get("status") in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
 
 
 def _queue_wanted_episode_numbers(queue: dict[str, Any]) -> set[int]:
@@ -3278,6 +3286,13 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
             except QBittorrentError:
                 hash_matches = []
             torrent = next((item for item in hash_matches if str(item.get("hash") or "").casefold() == torrent_hash), None)
+        if torrent is None and queue.get("status") == "submitted":
+            submitted_at = _parse_datetime(queue.get("queued_at"))
+            if submitted_at is not None and (datetime.now(timezone.utc) - submitted_at).total_seconds() < TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS:
+                queue["message"] = "Submitted to qBittorrent; waiting for the expected torrent hash to become visible."
+                changed = True
+                _sync_primary_download_queue(anime)
+                continue
         if torrent is None:
             torrent = _torrent_from_queue_fallback(client, torrents, anime, queue)
             discovered_hash = str((torrent or {}).get("hash") or "").casefold()
@@ -3349,7 +3364,7 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
 
 
 def _queue_status_needs_refresh(queue: dict[str, Any]) -> bool:
-    if queue.get("status") in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}:
+    if queue.get("status") in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}:
         return True
     if queue.get("status") == "missing" and str(queue.get("hash") or "").strip():
         return True
@@ -3357,7 +3372,7 @@ def _queue_status_needs_refresh(queue: dict[str, Any]) -> bool:
 
 
 def _reconcile_locally_satisfied_queue(anime: dict[str, Any], queue: dict[str, Any]) -> bool:
-    if queue.get("status") not in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}:
+    if queue.get("status") not in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}:
         return False
     if not _queue_episode_is_local(anime, queue):
         return False
@@ -4666,7 +4681,7 @@ def _local_episode_numbers(anime: dict[str, Any]) -> set[int]:
 
 def _active_download_queue(anime: dict[str, Any]) -> bool:
     return any(
-        queue.get("status") in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
+        queue.get("status") in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
         and not _queue_episode_is_local(anime, queue)
         for queue in _download_queue_items(anime)
     )
@@ -4689,7 +4704,7 @@ def _sync_primary_download_queue(anime: dict[str, Any], queues: list[dict[str, A
     queue_items = queues if queues is not None else _download_queue_items(anime)
     if len(queue_items) > 1 or isinstance(anime.get("download_queues"), list):
         anime["download_queues"] = queue_items
-    active_queue = next((queue for queue in queue_items if queue.get("status") in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}), None)
+    active_queue = next((queue for queue in queue_items if queue.get("status") in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}), None)
     anime["download_queue"] = active_queue or (queue_items[0] if queue_items else {})
 
 
@@ -4706,7 +4721,7 @@ def _queue_identity(queue: dict[str, Any]) -> str:
 
 
 def _active_queue_identity_keys(anime: dict[str, Any]) -> set[str]:
-    active_statuses = {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}
+    active_statuses = {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}
     return {
         key
         for queue in _download_queue_items(anime)
@@ -4718,7 +4733,7 @@ def _active_queue_identity_keys(anime: dict[str, Any]) -> set[str]:
 def _queued_episode_numbers(anime: dict[str, Any]) -> set[int]:
     episodes: set[int] = set()
     for queue in _download_queue_items(anime):
-        if queue.get("status") not in {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}:
+        if queue.get("status") not in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged", "completed", "imported"}:
             continue
         episode = _int_value(queue.get("episode"))
         if episode is not None:
@@ -6997,7 +7012,7 @@ def _archive_metadata_candidates(anime: dict[str, Any], candidates: list[Any]) -
 def _retained_download_queues(queues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if MAX_QUEUE_HISTORY_PER_ANIME <= 0:
         return queues
-    active_statuses = {"queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
+    active_statuses = {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}
     active = [queue for queue in queues if queue.get("status") in active_statuses]
     history = [queue for queue in queues if queue.get("status") not in active_statuses]
     if len(history) <= MAX_QUEUE_HISTORY_PER_ANIME:

@@ -60,7 +60,7 @@ class QBittorrentClient:
         paused: bool = False,
         root_folder: bool = True,
         expected_infohash: str = "",
-    ) -> None:
+    ) -> bool:
         fields = {
             "urls": url,
             "savepath": save_path,
@@ -78,10 +78,9 @@ class QBittorrentClient:
             detail = result or "empty response"
             raise QBittorrentError(f"qBittorrent rejected the torrent add request: {detail}")
         normalized_hash = str(expected_infohash or "").strip().casefold()
-        if normalized_hash and not self._wait_for_torrent(normalized_hash):
-            raise QBittorrentError(
-                "qBittorrent accepted the add request but the expected torrent did not become visible."
-            )
+        if normalized_hash:
+            return self._wait_for_torrent(normalized_hash)
+        return True
 
     def _wait_for_torrent(self, torrent_hash: str, attempts: int = 4) -> bool:
         for attempt in range(max(attempts, 1)):

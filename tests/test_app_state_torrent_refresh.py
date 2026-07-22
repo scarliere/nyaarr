@@ -1482,6 +1482,27 @@ def test_dispatch_inspects_and_starts_safe_torrent_immediately(monkeypatch) -> N
     assert "started immediately" in queue["message"]
 
 
+def test_dispatch_keeps_async_qbittorrent_add_as_submitted_without_duplicate(monkeypatch) -> None:
+    candidate = auto_candidate(1)
+    database = auto_dispatch_database([candidate])
+    anime = database["anime"][0]
+
+    class AsyncAddClient(FakeDownloadClient):
+        def add_url(self, url: str, **kwargs: object) -> bool:
+            super().add_url(url, **kwargs)
+            return False
+
+    client = AsyncAddClient()
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+
+    app_state._maybe_dispatch_torrent(database, anime)
+    app_state._maybe_dispatch_torrent(database, anime)
+
+    assert client.urls == [candidate["torrent_url"]]
+    assert anime["download_queue"]["status"] == "submitted"
+    assert app_state._queued_episode_numbers(anime) == {1}
+
+
 def test_refresh_download_queue_cleans_up_episode_torrents_covered_by_existing_batch(monkeypatch) -> None:
     database = auto_dispatch_database([])
     anime = database["anime"][0]
@@ -1573,24 +1594,21 @@ def test_qbittorrent_add_url_accepts_ok_response() -> None:
     )
 
 
-def test_qbittorrent_add_url_requires_expected_hash_to_become_visible(monkeypatch) -> None:
+def test_qbittorrent_add_url_reports_expected_hash_not_yet_visible(monkeypatch) -> None:
     client = qbittorrent_client.QBittorrentClient({"host": "localhost", "port": 8080})
     client._multipart_request = lambda path, fields: b"Ok."
     client.torrents = lambda **kwargs: []
     monkeypatch.setattr(qbittorrent_client.time, "sleep", lambda seconds: None)
 
-    try:
-        client.add_url(
-            "https://nyaa.si/download/123.torrent",
-            save_path="C:/Anime",
-            category="nyaarr",
-            tags="nyaarr,anime-1",
-            expected_infohash="abc123",
-        )
-    except qbittorrent_client.QBittorrentError as exc:
-        assert "expected torrent did not become visible" in str(exc)
-    else:
-        raise AssertionError("An accepted command must not become a queue until its hash is visible")
+    visible = client.add_url(
+        "https://nyaa.si/download/123.torrent",
+        save_path="C:/Anime",
+        category="nyaarr",
+        tags="nyaarr,anime-1",
+        expected_infohash="abc123",
+    )
+
+    assert visible is False
 
 
 def test_qbittorrent_add_url_confirms_expected_hash(monkeypatch) -> None:
