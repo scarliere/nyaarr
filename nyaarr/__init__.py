@@ -33,6 +33,7 @@ from .app_state import (
     create_superadmin_account,
     has_superadmin_account,
     hard_reset_queued_torrents,
+    issue_inbox_model,
     load_or_create_session_secret,
     library_stats,
     manual_selection_model,
@@ -495,6 +496,11 @@ def create_app() -> Flask:
             settings=user_settings(),
         )
 
+
+    @app.get("/system/issues")
+    def system_issues():
+        return render_template("issues.html", active_page="system_issues", issues=issue_inbox_model())
+
     @app.get("/system/logs")
     @app.get("/system/events")
     def system_logs():
@@ -725,6 +731,7 @@ def _empty_sidebar_counts() -> dict[str, int]:
         "wanted": 0,
         "settings_missing": 0,
         "events": 0,
+        "issues": 0,
     }
 
 

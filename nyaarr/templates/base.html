@@ -50,10 +50,11 @@
           <span>Settings</span>
           <b id="settings-missing-badge" class="nav-warning-badge" {% if not sidebar_counts.settings_missing %}hidden{% endif %}><span data-settings-missing-count>{{ sidebar_counts.settings_missing }}</span></b>
         </a>
-        <details class="nav-group" {% if active_page in ['system_status', 'system_logs'] %}open{% endif %}>
-          <summary class="nav-item nav-summary {% if active_page in ['system_status', 'system_logs'] %}active{% endif %}"><span>System</span></summary>
+        <details class="nav-group" {% if active_page in ['system_status', 'system_issues', 'system_logs'] %}open{% endif %}>
+          <summary class="nav-item nav-summary {% if active_page in ['system_status', 'system_issues', 'system_logs'] %}active{% endif %}"><span>System</span></summary>
           <div class="nav-sublist" aria-label="System sections">
             <a class="nav-subitem {% if active_page == 'system_status' %}active{% endif %}" href="{{ url_for('system_status') }}"><span>Status</span></a>
+            <a class="nav-subitem {% if active_page == 'system_issues' %}active{% endif %}" href="{{ url_for('system_issues') }}"><span>Issues</span><b class="nav-warning-badge" data-sidebar-count="issues" {% if not sidebar_counts.issues %}hidden{% endif %}>{{ sidebar_counts.issues }}</b></a>
             <a class="nav-subitem {% if active_page == 'system_logs' %}active{% endif %}" href="{{ url_for('system_logs') }}"><span>Logs</span><b data-sidebar-count="events" {% if not sidebar_counts.events %}hidden{% endif %}>{{ sidebar_counts.events }}</b></a>
           </div>
         </details>

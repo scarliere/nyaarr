@@ -184,16 +184,23 @@ def _run_startup_reconcile(_payload: dict[str, Any]) -> None:
     app_state.run_startup_download_status_check()
 
 
+def _require_completed(result: dict[str, Any], operation: str) -> None:
+    if str(result.get("status") or "").casefold() == "skipped":
+        error = RuntimeError(f"{operation} deferred because another maintenance generation is still running")
+        error.retry_after = 5
+        raise error
+
+
 def _run_download_queue_refresh(_payload: dict[str, Any]) -> None:
-    app_state.run_download_queue_refresh()
+    _require_completed(app_state.run_download_queue_refresh(), "Download queue refresh")
 
 
 def _run_local_reconcile(_payload: dict[str, Any]) -> None:
-    app_state.run_periodic_maintenance_tick(include_airing=False, include_external=False, include_local=True)
+    _require_completed(app_state.run_periodic_maintenance_tick(include_airing=False, include_external=False, include_local=True), "Local reconciliation")
 
 
 def _run_external_refresh(_payload: dict[str, Any]) -> None:
-    app_state.run_periodic_maintenance_tick(include_airing=False, include_external=True, include_local=False)
+    _require_completed(app_state.run_periodic_maintenance_tick(include_airing=False, include_external=True, include_local=False), "External refresh")
 
 
 def _run_airing_refresh(_payload: dict[str, Any]) -> None:

@@ -13,7 +13,8 @@ from typing import Any, Callable
 
 
 REVISION_FIELD = "__nyaarr_storage_revision"
-_HISTORY_LIMIT = 256
+# Complete snapshots are expensive for large libraries; eight still cover normal concurrent writes.
+_HISTORY_LIMIT = 8
 
 
 class StateRepositoryError(RuntimeError):

@@ -133,6 +133,14 @@ class QBittorrentClient:
                 raise
             self._request("/api/v2/torrents/start", data={"hashes": torrent_hash})
 
+    def pause(self, torrent_hash: str) -> None:
+        try:
+            self._request("/api/v2/torrents/pause", data={"hashes": torrent_hash})
+        except QBittorrentError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+            self._request("/api/v2/torrents/stop", data={"hashes": torrent_hash})
+
     def delete(self, torrent_hash: str, *, delete_files: bool = False) -> None:
         self._request(
             "/api/v2/torrents/delete",

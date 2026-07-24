@@ -1,0 +1,17 @@
+﻿{% extends layout_template|default("base.html") %}
+{% block title %}Nyaarr - Issues{% endblock %}
+{% block content %}
+<section class="activity-workspace" data-page-title="Nyaarr - Issues">
+  <header class="workspace-header"><div><p class="eyebrow">Automation</p><h1>Issue Inbox</h1><p>Only work Nyaarr could not safely resolve automatically appears here.</p></div></header>
+  <div class="activity-table-wrap">
+    <table class="activity-table system-logs-table">
+      <thead><tr><th>Opened</th><th>Anime</th><th>Issue</th><th>Action</th></tr></thead>
+      <tbody>
+      {% for issue in issues.rows %}
+        <tr><td data-label="Opened">{{ issue.created_at }}</td><td data-label="Anime">{{ issue.anime_title }}</td><td data-label="Issue">{{ issue.message }}</td><td data-label="Action"><a class="button secondary" href="{{ issue.action_url }}">Resolve</a></td></tr>
+      {% else %}<tr><td class="activity-empty" colspan="4">No unresolved automation issues.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

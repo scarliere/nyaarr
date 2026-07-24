@@ -274,9 +274,9 @@ def test_accepting_one_manual_episode_keeps_remaining_episode_visible(monkeypatc
 
     assert success is True
     assert message == "Selected torrent was sent to qBittorrent."
-    assert anime["torrent_manual_selection"]["required"] is True
-    assert model["count"] == 1
-    assert [candidate["episode"] for candidate in model["items"][0]["candidates"]] == [6]
+    assert app_state._locked_release_group(anime) == "SteadySubs"
+    assert anime["torrent_manual_selection"]["required"] is False
+    assert model["count"] == 0
     assert writes == [database]
 
 
@@ -1999,7 +1999,7 @@ def test_download_client_form_saves_remote_path_mapping() -> None:
     assert client["local_path"] == "D:/Anime"
 
 
-def test_selected_batch_import_replaces_existing_episode_file_in_anime_folder(monkeypatch, tmp_path) -> None:
+def test_selected_batch_import_preserves_conflicting_existing_episode_file(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
     anime_folder = root / "Petals of Reincarnation"
     batch_folder = root / "Petals Complete Batch"
@@ -2028,19 +2028,12 @@ def test_selected_batch_import_replaces_existing_episode_file_in_anime_folder(mo
 
     imported = app_state._import_completed_torrent(anime, queue, {"download_client": {}})
 
-    assert imported is True
+    assert imported is False
+    assert queue["import_status"] == "blocked"
+    assert "no importable media files" in queue["message"]
     assert destination.read_bytes() == b"old individual torrent file"
-    assert source.exists()
-    assert anime["local_path"] == str(anime_folder.resolve())
-    assert anime["episode_files"] == [str(destination.resolve())]
-
-    queue["import_status"] = "imported"
-    queue["message"] = "Completed torrent imported into the anime root folder."
-    imported_again = app_state._import_completed_torrent(anime, queue, {"download_client": {}})
-
-    assert imported_again is True
-    assert queue["import_status"] == "imported"
-    assert anime["episode_files"] == [str(destination.resolve())]
+    assert source.read_bytes() == b"batch torrent file"
+    assert anime["episode_files"] == [str(destination)]
 
 def test_completed_torrent_import_uses_remote_path_mapping(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Anime"
@@ -3118,6 +3111,9 @@ def test_no_candidate_search_stays_in_manual_intervention(monkeypatch) -> None:
     monkeypatch.setattr(app_state, "find_torrents_for_anime", lambda item, preferred_subbers=None: {"query": "Petals", "strategy": "No candidates", "candidates": [], "notices": []})
 
     app_state._refresh_torrent_search(anime, database)
+    assert anime["torrent_manual_selection"]["required"] is False
+    app_state._refresh_torrent_search(anime, database)
+    app_state._refresh_torrent_search(anime, database)
 
     assert anime["torrent_manual_selection"]["required"] is True
     assert anime["torrent_manual_selection"]["intervention_type"] == "no_candidates"
@@ -3136,6 +3132,9 @@ def test_refresh_treats_ignored_only_candidates_as_no_usable_candidates(monkeypa
         lambda item, preferred_subbers=None: {"query": "Petals", "strategy": "Only ignored", "candidates": [candidate], "notices": []},
     )
 
+    app_state._refresh_torrent_search(anime, database)
+    assert anime["torrent_manual_selection"]["required"] is False
+    app_state._refresh_torrent_search(anime, database)
     app_state._refresh_torrent_search(anime, database)
 
     assert anime["torrent_search"]["candidates"] == []
@@ -3160,8 +3159,8 @@ def test_maintenance_normalizes_stored_ignored_only_candidates(monkeypatch) -> N
 
     assert summary["status"] == "ok"
     assert anime["torrent_search"]["candidates"] == []
-    assert anime["torrent_manual_selection"]["required"] is True
-    assert anime["torrent_manual_selection"]["intervention_type"] == "no_candidates"
+    assert anime["torrent_manual_selection"]["required"] is False
+    assert anime["automation"]["exhaustive_cycles"] == 1
     assert writes == [database]
 
 
@@ -3217,6 +3216,8 @@ def test_selection_without_usable_candidates_uses_no_candidate_manual_state() ->
     database["ignored_torrents"] = [{"key": "hash:candidate-1"}]
 
     selected = app_state._selected_download_releases([candidate], database, anime)
+    app_state._selected_download_releases([candidate], database, anime)
+    app_state._selected_download_releases([candidate], database, anime)
 
     assert selected == []
     assert anime["torrent_manual_selection"]["required"] is True
@@ -3378,7 +3379,8 @@ def test_manual_magnet_learns_subber_and_searches_remaining_episodes_immediately
     assert searches == ["SubsPlease"]
     assert len(dispatches) == 2
     assert dispatches[0]["title"].startswith("[SubsPlease]")
-    assert dispatches[1] is None
+    assert dispatches[1]["episode"] == 6
+    assert dispatches[1]["release_group"] == "SubsPlease"
 
 
 def test_activity_batch_queue_covers_all_wanted_episode_rows() -> None:

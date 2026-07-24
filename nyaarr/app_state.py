@@ -23,6 +23,7 @@ from typing import Any
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .airing_repository import SQLiteAiringRepository
+from .audit import AuditLog
 from .episode_title_repository import SQLiteEpisodeTitleRepository
 from .jikan_client import JikanNotFoundError, client as jikan_client
 from .metadata import (
@@ -41,6 +42,7 @@ from .persistence import REVISION_FIELD, SQLiteStateRepository
 from .torrent_finder import _title_matches as torrent_title_matches
 from .torrent_finder import _audio_preference_rank, _is_dub_release
 from .torrent_finder import episode_number_from_title, find_torrents_for_anime, release_group_from_title
+from .torrent_scheduler import enforce_download_limit
 
 
 USER_DATA_DIR = Path("data/user")
@@ -748,14 +750,39 @@ def _filter_ignored_torrent_candidates(database: dict[str, Any], candidates: lis
     ]
 
 
-def _set_no_usable_torrent_candidates(anime: dict[str, Any]) -> None:
-    _set_manual_selection_required(
-        anime,
-        0,
-        "No usable torrent candidates were found. Manual torrent or magnet link is required.",
-        "",
-        intervention_type="no_candidates",
-    )
+def _set_no_usable_torrent_candidates(anime: dict[str, Any], database: dict[str, Any] | None = None) -> None:
+    now = datetime.now(timezone.utc)
+    automation = anime.setdefault("automation", {})
+    first_text = str(automation.get("first_unresolved_at") or "").replace("Z", "+00:00")
+    try:
+        first = datetime.fromisoformat(first_text) if first_text else None
+    except ValueError:
+        first = None
+    if first is not None and first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    if first is None:
+        first = now
+        automation["first_unresolved_at"] = now.isoformat()
+    automation["exhaustive_cycles"] = int(automation.get("exhaustive_cycles") or 0) + 1
+    automation["last_unresolved_at"] = now.isoformat()
+    reason = "No usable torrent candidates were found after automated search."
+    exhausted = automation["exhaustive_cycles"] >= 3 or (now - first).total_seconds() >= 24 * 60 * 60
+    if not exhausted:
+        anime["torrent_manual_selection"] = {"required": False}
+        _append_torrent_notice(anime, f"{reason} Automatic retry {automation['exhaustive_cycles']} of 3 is scheduled.")
+        return
+    _set_manual_selection_required(anime, 0, reason + " User input is required.", "", intervention_type="no_candidates")
+    if database is not None:
+        issues = database.setdefault("issues", [])
+        issue_key = f"torrent-unresolved:{anime.get('library_id', '')}"
+        if isinstance(issues, list) and not any(item.get("issue_key") == issue_key and item.get("status") == "open" for item in issues if isinstance(item, dict)):
+            issues.append({
+                "issue_key": issue_key, "status": "open", "severity": "warning",
+                "created_at": now.isoformat(), "anime_library_id": str(anime.get("library_id") or ""),
+                "anime_title": str(anime.get("title") or anime.get("original_title") or ""),
+                "message": reason + " Choose a release or provide a torrent/magnet link.",
+                "action_url": "/anime/manual-selection",
+            })
 
 
 def _normalize_unusable_torrent_candidates(database: dict[str, Any], anime: dict[str, Any], *, refreshed: bool = False) -> bool:
@@ -763,7 +790,7 @@ def _normalize_unusable_torrent_candidates(database: dict[str, Any], anime: dict
     raw_candidates = torrent_search.get("candidates") if isinstance(torrent_search.get("candidates"), list) else []
     if not raw_candidates:
         if refreshed and _missing_episode_numbers(anime):
-            _set_no_usable_torrent_candidates(anime)
+            _set_no_usable_torrent_candidates(anime, database)
             return True
         return False
 
@@ -777,7 +804,7 @@ def _normalize_unusable_torrent_candidates(database: dict[str, Any], anime: dict
         if isinstance(notices, list) and "All refreshed torrent candidates were already blocked or rejected." not in notices:
             notices.append("All refreshed torrent candidates were already blocked or rejected.")
         if _missing_episode_numbers(anime):
-            _set_no_usable_torrent_candidates(anime)
+            _set_no_usable_torrent_candidates(anime, database)
     return True
 
 
@@ -2019,11 +2046,13 @@ def assign_manual_torrent_url(library_id: str, torrent_link: str, episode: str =
         candidates.insert(0, release)
     _maybe_dispatch_torrent(database, anime, forced_release=release)
     _refresh_manual_dispatch_queue(database, anime, release)
+    selected_was_queued = any(queue.get("torrent_url") == release.get("torrent_url") for queue in _download_queue_items(anime))
+    if selected_was_queued:
+        _resolve_anime_issues(database, anime)
     _search_and_dispatch_locked_group(database, anime)
-    _reopen_manual_selection_for_remaining_candidates(database, anime)
     _record_event(database, "torrent", f"User submitted manual torrent link for {anime.get('title', 'anime')}.", anime, release)
     _write_user_database(database)
-    if any(queue.get("torrent_url") == release.get("torrent_url") for queue in _download_queue_items(anime)):
+    if selected_was_queued:
         return True, "Manual torrent link was sent to qBittorrent."
     updated_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
     notices = updated_search.get("notices") if isinstance(updated_search.get("notices"), list) else []
@@ -2043,12 +2072,16 @@ def assign_manual_torrent(library_id: str, selection_key: str) -> tuple[bool, st
     score, reasons = _torrent_candidate_confidence(release, database, anime)
     release["confidence"] = score
     release["confidence_reasons"] = reasons + ["selected manually"]
+    _set_release_group_lock_from_release(anime, release, "manual")
     _maybe_dispatch_torrent(database, anime, forced_release=release)
     _refresh_manual_dispatch_queue(database, anime, release)
-    _reopen_manual_selection_for_remaining_candidates(database, anime)
+    selected_was_queued = any(queue.get("torrent_url") == release.get("torrent_url") for queue in _download_queue_items(anime))
+    if selected_was_queued:
+        _resolve_anime_issues(database, anime)
+    _search_and_dispatch_locked_group(database, anime)
     _record_event(database, "torrent", f"User selected manual torrent {release.get('title', 'selected torrent')}.", anime, release)
     _write_user_database(database)
-    if any(queue.get("torrent_url") == release.get("torrent_url") for queue in _download_queue_items(anime)):
+    if selected_was_queued:
         return True, "Selected torrent was sent to qBittorrent."
     updated_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
     notices = updated_search.get("notices") if isinstance(updated_search.get("notices"), list) else []
@@ -2072,7 +2105,10 @@ def _search_and_dispatch_locked_group(database: dict[str, Any], anime: dict[str,
     if not locked_group or not _missing_episode_numbers(anime):
         return
     _refresh_torrent_search(anime, database)
-    _maybe_dispatch_torrent(database, anime)
+    torrent_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
+    releases = _selected_download_releases(torrent_search.get("candidates"), database, anime)
+    for release in releases:
+        _maybe_dispatch_torrent(database, anime, forced_release=release)
     _append_torrent_notice(anime, f"Searched remaining missing episodes using locked release group {locked_group}.")
 
 
@@ -2138,8 +2174,24 @@ def sidebar_counts(database: dict[str, Any] | None = None) -> dict[str, int]:
         "wanted": wanted_count,
         "settings_missing": missing_settings_summary(database)["count"],
         "events": _event_count(database),
+        "issues": sum(1 for issue in database.get("issues", []) if isinstance(issue, dict) and issue.get("status") == "open"),
     }
 
+
+
+def issue_inbox_model() -> dict[str, Any]:
+    database = _read_user_database()
+    rows = [dict(issue) for issue in database.get("issues", []) if isinstance(issue, dict) and issue.get("status") == "open"]
+    rows.sort(key=lambda issue: str(issue.get("created_at") or ""), reverse=True)
+    return {"rows": rows, "count": len(rows)}
+
+
+def _resolve_anime_issues(database: dict[str, Any], anime: dict[str, Any]) -> None:
+    library_id = str(anime.get("library_id") or "")
+    for issue in database.get("issues", []):
+        if isinstance(issue, dict) and issue.get("status") == "open" and str(issue.get("anime_library_id") or "") == library_id:
+            issue["status"] = "resolved"
+            issue["resolved_at"] = datetime.now(timezone.utc).isoformat()
 
 def activity_model(section: str) -> dict[str, Any]:
     database = _read_user_database()
@@ -2661,6 +2713,12 @@ def _record_event(database: dict[str, Any], category: str, message: str, anime: 
         }
     )
     del events[:-200]
+    try:
+        AuditLog(_state_repository().database_path).append(category, message, anime or {}, torrent or {})
+    except Exception:
+        # The compatibility event list remains available if the audit database
+        # is temporarily busy; audit failures must not break automation.
+        pass
 
 
 def _event_row(event: dict[str, Any]) -> dict[str, str]:
@@ -3383,6 +3441,7 @@ def _download_queue_from_release(
         "target_folder": _target_folder_name(anime),
         "queued_at": datetime.now(timezone.utc).isoformat(),
         "message": "Sent to qBittorrent paused for file safety inspection.",
+        "manual_selected": "selected manually" in release.get("confidence_reasons", []),
     }
 
 
@@ -3528,6 +3587,18 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
                 _record_event(database, "import", queue["message"], anime, queue)
                 changed = True
         _sync_primary_download_queue(anime)
+    queues_by_hash = {
+        str(queue.get("hash") or "").casefold(): queue
+        for anime in database.get("anime", []) if isinstance(anime, dict)
+        for queue in _download_queue_items(anime)
+        if str(queue.get("hash") or "").strip()
+    }
+    try:
+        scheduler = enforce_download_limit(client, torrents, queues_by_hash, limit=5)
+        changed = changed or bool(scheduler.get("paused") or scheduler.get("resumed"))
+    except QBittorrentError as exc:
+        _record_event(database, "scheduler", f"Download capacity controller failed: {exc}")
+        changed = True
     return changed
 
 
@@ -3657,7 +3728,7 @@ def _queue_needs_safety_inspection(queue: dict[str, Any], torrent: dict[str, Any
 def _resume_safe_paused_torrent(client: Any, torrent_hash: str, queue: dict[str, Any]) -> bool:
     if queue.get("safety_status") != "safe":
         return False
-    if queue.get("user_add_paused"):
+    if queue.get("user_add_paused") or queue.get("scheduler_pause_reason"):
         return False
     if queue.get("status") != "paused":
         return False
@@ -3790,7 +3861,10 @@ def _import_completed_torrent(
     target_folder.mkdir(parents=True, exist_ok=True)
     imported_paths: list[str] = []
     for source_path in importable_paths:
-        destination = target_folder / source_path.name
+        destination = _safe_import_destination(target_folder, content_path, source_path)
+        if destination is None:
+            queue.setdefault("rejected_import_files", []).append({"path": str(source_path), "reason": "unsafe or excessively nested path"})
+            continue
         if not _stage_imported_media_file(source_path, destination, queue):
             continue
         imported_paths.append(str(destination.resolve()))
@@ -3813,6 +3887,23 @@ def _import_completed_torrent(
     return True
 
 
+
+def _safe_import_destination(target_folder: Path, content_path: Path | None, source_path: Path) -> Path | None:
+    relative = Path(source_path.name)
+    if content_path is not None and content_path.is_dir():
+        try:
+            relative = source_path.resolve().relative_to(content_path.resolve())
+        except (OSError, ValueError):
+            return None
+    if len(relative.parts) > 8 or any(part in {"", ".", ".."} for part in relative.parts):
+        return None
+    destination = target_folder.joinpath(*relative.parts)
+    try:
+        destination.resolve().relative_to(target_folder.resolve())
+    except (OSError, ValueError):
+        return None
+    return destination
+
 def _stage_imported_media_file(source_path: Path, destination: Path, queue: dict[str, Any]) -> bool:
     try:
         if source_path.resolve() == destination.resolve():
@@ -3820,19 +3911,49 @@ def _stage_imported_media_file(source_path: Path, destination: Path, queue: dict
     except OSError:
         return False
 
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
-        return True
+        if _media_file_fingerprint(source_path) == _media_file_fingerprint(destination):
+            return True
+        queue["import_status"] = "conflict"
+        queue["message"] = f"A different file already exists at {destination.name}; user review is required."
+        return False
 
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(6)}.nyaarr-part")
     try:
         try:
-            os.link(source_path, destination)
+            os.link(source_path, temporary)
         except OSError:
-            shutil.copy2(str(source_path), str(destination))
+            with source_path.open("rb") as source, temporary.open("xb") as target:
+                shutil.copyfileobj(source, target, length=8 * 1024 * 1024)
+                target.flush()
+                os.fsync(target.fileno())
+        if _media_file_fingerprint(source_path) != _media_file_fingerprint(temporary):
+            raise OSError("staged file fingerprint did not match its source")
+        os.replace(temporary, destination)
     except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
         queue["import_status"] = "waiting_for_files"
-        queue["message"] = f"Could not preserve and stage selected media file in anime folder: {exc}"
+        queue["message"] = f"Could not atomically preserve and stage selected media file: {exc}"
         return False
     return True
+
+
+def _media_file_fingerprint(path: Path) -> tuple[int, str] | None:
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            digest.update(handle.read(1024 * 1024))
+            if size > 1024 * 1024:
+                handle.seek(max(0, size - 1024 * 1024))
+                digest.update(handle.read(1024 * 1024))
+        return size, digest.hexdigest()
+    except OSError:
+        return None
 
 
 def _queue_imports_selected_batch_files(queue: dict[str, Any]) -> bool:
@@ -4032,7 +4153,7 @@ def _selected_download_releases(
         candidate["confidence_reasons"] = reasons
         scored.append(candidate)
     if not scored:
-        _set_no_usable_torrent_candidates(anime)
+        _set_no_usable_torrent_candidates(anime, database)
         return []
     scored.sort(key=lambda item: _candidate_selection_sort_key(item, database or {}, anime), reverse=True)
     best = scored[0]
@@ -7046,15 +7167,30 @@ def _sync_anime_nfo_file(anime: dict[str, Any]) -> bool:
     target = _anime_nfo_path(anime)
     if target is None:
         return False
+    temp_path = target.with_suffix(target.suffix + ".tmp")
     try:
         content = _anime_nfo_xml(anime, anilist_id)
+        ET.fromstring(content)
         if target.exists() and target.read_text(encoding="utf-8") == content:
+            anime["nfo_status"] = "ready"
+            anime["nfo_anilist_id"] = anilist_id
             return False
-        temp_path = target.with_suffix(target.suffix + ".tmp")
-        temp_path.write_text(content, encoding="utf-8")
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp_path, target)
+        anime["nfo_status"] = "ready"
+        anime["nfo_anilist_id"] = anilist_id
+        anime.pop("nfo_error", None)
         return True
-    except OSError:
+    except (OSError, ET.ParseError) as exc:
+        anime["nfo_status"] = "error"
+        anime["nfo_error"] = str(exc)
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
 
 
