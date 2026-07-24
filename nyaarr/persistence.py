@@ -94,6 +94,19 @@ class SQLiteStateRepository:
             proposed[REVISION_FIELD] = next_revision
             return proposed
 
+    def backup(self, destination: Path) -> Path:
+        """Create a consistent SQLite backup without copying live WAL files."""
+        with self._lock:
+            self._initialize()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with self._connect() as source, sqlite3.connect(destination) as target:
+                source.backup(target)
+            return destination
+
+    def clear_history(self) -> None:
+        with self._lock:
+            self._history.clear()
+
     def revision(self) -> int:
         with self._lock:
             self._initialize()

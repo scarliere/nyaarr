@@ -1446,3 +1446,10 @@ def _int_child(item: ET.Element, tag: str) -> int:
         return int(value)
     except ValueError:
         return 0
+
+
+def clear_runtime_caches() -> None:
+    with _RSS_CACHE_LOCK:
+        _RSS_CACHE.clear()
+    with _TORRENT_METAINFO_CACHE_LOCK:
+        _TORRENT_METAINFO_CACHE.clear()

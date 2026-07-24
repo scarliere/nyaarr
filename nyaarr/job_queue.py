@@ -167,6 +167,13 @@ class DurableJobQueue:
             ],
         }
 
+    def reset_non_running(self) -> int:
+        """Remove rebuildable queued/history work while leaving active jobs alone."""
+        with self._connect() as connection:
+            removed = connection.execute("DELETE FROM jobs WHERE status != 'running'").rowcount
+            connection.commit()
+        return int(removed or 0)
+
     def prune(self, retain_completed: int = 200) -> None:
         with self._connect() as connection:
             connection.execute(

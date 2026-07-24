@@ -22,6 +22,7 @@ from typing import Any
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from . import metadata as metadata_module, torrent_finder as torrent_finder_module
 from .airing_repository import SQLiteAiringRepository
 from .audit import AuditLog
 from .episode_title_repository import SQLiteEpisodeTitleRepository
@@ -46,6 +47,7 @@ from .torrent_scheduler import enforce_download_limit
 
 
 USER_DATA_DIR = Path("data/user")
+STATE_BACKUP_DIR = Path(os.environ.get("NYAARR_STATE_BACKUP_DIR", USER_DATA_DIR / "backups"))
 USER_DATABASE_PATH = Path(os.environ.get("NYAARR_USER_DATABASE_PATH", USER_DATA_DIR / "anime-library.json"))
 SESSION_SECRET_PATH = Path(os.environ.get("NYAARR_SESSION_SECRET_PATH", USER_DATA_DIR / "session-secret.key"))
 RESOLVED_METADATA_CACHE_PATH = Path(
@@ -2289,6 +2291,89 @@ def hard_reset_queued_torrents(selections: list[str] | None = None) -> tuple[boo
     return True, message + " Fresh discovery and bounded dispatch were prioritized in the background."
 
 
+
+def hard_reset_stale_application_state(confirmation: str) -> tuple[bool, str]:
+    """Back up state, discard rebuildable data, and queue full reconciliation.
+
+    User accounts, settings, anime identity, imported media, NFO files, download
+    queue mappings, and qBittorrent payloads are deliberately preserved.
+    """
+    if str(confirmation or "").strip() != "RESET":
+        return False, 'Type RESET exactly to confirm the stale-data rebuild.'
+    from .maintenance import begin_recovery_barrier, end_recovery_barrier
+    if not begin_recovery_barrier():
+        return False, "Background work is currently active. Wait for it to finish and try again."
+    acquired_locks: list[threading.Lock] = []
+    for lock in (_STATE_MAINTENANCE_LOCK, _EXTERNAL_MAINTENANCE_LOCK, _ROOT_SCAN_JOB_LOCK):
+        if not lock.acquire(blocking=False):
+            for acquired in reversed(acquired_locks):
+                acquired.release()
+            end_recovery_barrier()
+            return False, "A reconciliation or root scan is currently active. Wait for it to finish and try again."
+        acquired_locks.append(lock)
+    try:
+        repository = _state_repository()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        backup_path = repository.backup(STATE_BACKUP_DIR / f"nyaarr-state-{stamp}.sqlite3")
+        database = _read_user_database()
+        reset_anime = 0
+        for anime in database.get("anime", []):
+            if not isinstance(anime, dict):
+                continue
+            reset_anime += 1
+            anime.pop("automation", None)
+            anime.pop("torrent_dispatch_attempted_at", None)
+            anime.pop("torrent_dispatch_backlog", None)
+            anime.pop("poster_checked_at", None)
+            anime.pop("poster_error", None)
+            anime.pop("anilist_metadata_checked_at", None)
+            anime.pop("anilist_metadata_error", None)
+            anime.pop("nfo_error", None)
+            if anime.get("monitored") is not False and not _download_need_satisfied(anime):
+                anime["torrent_search"] = {
+                    "query": str(anime.get("title") or anime.get("original_title") or ""),
+                    "strategy": "Stale state reset; fresh discovery queued",
+                    "candidates": [],
+                    "checked_at": "",
+                    "notices": ["Rebuilding derived search state from current settings and files."],
+                }
+                anime["torrent_manual_selection"] = {"required": False}
+        database["issues"] = []
+        _record_event(database, "settings", f"Backed up and rebuilt stale derived state for {reset_anime} anime.")
+        _write_user_database(database)
+        repository.clear_history()
+        for cache_path in (
+            RESOLVED_METADATA_CACHE_PATH,
+            metadata_module.OFFLINE_CACHE_FILE,
+            metadata_module.OFFLINE_CACHE_METADATA_FILE,
+        ):
+            try:
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        metadata_module.clear_runtime_caches()
+        torrent_finder_module.clear_runtime_caches()
+        from .job_queue import DurableJobQueue
+        removed_jobs = DurableJobQueue(repository.database_path).reset_non_running()
+    except Exception as exc:
+        return False, f"The recovery backup or reset could not be completed: {exc}"
+    finally:
+        for acquired in reversed(acquired_locks):
+            acquired.release()
+        end_recovery_barrier()
+
+    from .maintenance import enqueue_job
+    generation = time.time_ns()
+    enqueue_job("startup_reconcile", idempotency_key=f"stale-reset-startup:{generation}", priority=100)
+    enqueue_job("local_reconcile", idempotency_key=f"stale-reset-local:{generation}", priority=99)
+    enqueue_job("external_refresh", idempotency_key=f"stale-reset-external:{generation}", priority=98)
+    enqueue_job("anilist_refresh", idempotency_key=f"stale-reset-anilist:{generation}", priority=97)
+    enqueue_job("offline_metadata_refresh", idempotency_key=f"stale-reset-offline:{generation}", priority=20)
+    root_folder = str(database.get("settings", {}).get("root_folder") or "").strip()
+    if root_folder:
+        enqueue_job("root_scan", {"root_folder": root_folder}, idempotency_key=f"stale-reset-root:{generation}", priority=96)
+    return True, f"Stale state rebuilt for {reset_anime} anime. Backup: {backup_path}. Cleared {removed_jobs} inactive job record(s); reconciliation is running."
+
 def anime_detail_model(library_id: str) -> dict[str, Any] | None:
     database = _read_user_database()
     anime = _find_database_anime(database, library_id)
@@ -3514,7 +3599,7 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
                 hash_matches = []
             torrent = next((item for item in hash_matches if str(item.get("hash") or "").casefold() == torrent_hash), None)
         if torrent is None and queue.get("status") == "submitted":
-            submitted_at = _parse_datetime(queue.get("queued_at"))
+            submitted_at = _parse_airing_datetime(queue.get("queued_at"))
             if submitted_at is not None and (datetime.now(timezone.utc) - submitted_at).total_seconds() < TORRENT_SUBMISSION_VISIBILITY_GRACE_SECONDS:
                 queue["message"] = "Submitted to qBittorrent; waiting for the expected torrent hash to become visible."
                 changed = True

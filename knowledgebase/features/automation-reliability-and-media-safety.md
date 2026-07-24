@@ -25,3 +25,7 @@ Nyaarr now treats an added, monitored anime as an automation request that remain
 ## Current limitations
 
 Nyaarr preserves torrent payloads and existing Jellyfin filenames; it does not rename or delete qBittorrent-owned content. Path conflicts and inaccessible completed-download paths require user review rather than destructive guessing. Issue records are visible in the System > Issues inbox and resolve when user intervention successfully resumes automation. Audit archival/export remains future work.
+
+## Startup reconciliation fix
+
+Submitted torrents inside the qBittorrent visibility grace period use the shared timezone-safe ISO datetime parser. This prevents local reconciliation from failing at startup due to an undefined parser while qBittorrent is still registering a newly submitted hash.

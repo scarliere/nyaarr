@@ -47,6 +47,20 @@ def stop_periodic_maintenance() -> None:
         executor.shutdown(wait=False, cancel_futures=False)
 
 
+def begin_recovery_barrier() -> bool:
+    """Pause job dispatch only when no worker is currently mutating state."""
+    if not _scheduler_lock.acquire(blocking=False):
+        return False
+    if _active_futures:
+        _scheduler_lock.release()
+        return False
+    return True
+
+
+def end_recovery_barrier() -> None:
+    _scheduler_lock.release()
+
+
 def enqueue_job(
     job_type: str,
     payload: dict[str, Any] | None = None,

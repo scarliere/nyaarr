@@ -1595,6 +1595,29 @@ def test_dispatch_keeps_async_qbittorrent_add_as_submitted_without_duplicate(mon
     assert app_state._queued_episode_numbers(anime) == {1}
 
 
+def test_submitted_torrent_visibility_grace_uses_timezone_safe_datetime(monkeypatch) -> None:
+    database = auto_dispatch_database([])
+    anime = database["anime"][0]
+    queue = {
+        "status": "submitted",
+        "hash": "not-visible-yet",
+        "release_kind": "episode",
+        "episode": 1,
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "safety_status": "pending",
+    }
+    anime["download_queues"] = [queue]
+    anime["download_queue"] = queue
+    client = FakeDownloadClient([])
+    monkeypatch.setattr(app_state, "client_from_settings", lambda *args, **kwargs: client)
+
+    changed = app_state._refresh_download_queue(database)
+
+    assert changed is True
+    assert queue["status"] == "submitted"
+    assert "waiting for the expected torrent hash" in queue["message"]
+
+
 def test_refresh_download_queue_cleans_up_episode_torrents_covered_by_existing_batch(monkeypatch) -> None:
     database = auto_dispatch_database([])
     anime = database["anime"][0]

@@ -37,6 +37,13 @@
       </div>
     {% endif %}
 
+
+    {% if recovery_summary %}
+      <div class="settings-alert {% if recovery_summary.ok %}ok{% else %}warn{% endif %}" role="status">
+        <strong>{{ recovery_summary.message }}</strong>
+      </div>
+    {% endif %}
+
     {% if torrent_summary %}
       <div class="settings-alert {% if torrent_summary.ok %}ok{% else %}warn{% endif %}">
         <strong>{{ torrent_summary.message }}</strong>
@@ -138,6 +145,21 @@
           <span>Add qBittorrent before Nyaarr can send selected releases to a download client.</span>
         {% endif %}
       </div>
+    </section>
+
+
+    <section class="settings-panel settings-danger-panel">
+      <div class="section-heading"><h2>Recovery</h2></div>
+      <p>Use this only when Nyaarr shows stale searches, issues, or database-backed status after an update.</p>
+      <details class="settings-advanced">
+        <summary>Hard reset stale app data</summary>
+        <form class="settings-form" action="{{ url_for('hard_reset_stale_application_state_route') }}" method="post" onsubmit="return window.confirm('Back up and rebuild Nyaarr derived data? Media files and qBittorrent payloads will not be deleted.')">
+          <p>Nyaarr creates a SQLite backup, preserves accounts, settings, anime, confirmed media, NFO files, download mappings, and torrents, then clears rebuildable caches, stale issues, searches, and inactive jobs.</p>
+          <label for="stale-reset-confirmation">Type RESET to confirm</label>
+          <input id="stale-reset-confirmation" name="confirmation" type="text" autocomplete="off" required pattern="RESET">
+          <button class="danger" type="submit">Back up and rebuild stale data</button>
+        </form>
+      </details>
     </section>
 
     <dialog id="download-client-dialog" class="settings-dialog">

@@ -33,6 +33,7 @@ from .app_state import (
     create_superadmin_account,
     has_superadmin_account,
     hard_reset_queued_torrents,
+    hard_reset_stale_application_state,
     issue_inbox_model,
     load_or_create_session_secret,
     library_stats,
@@ -475,6 +476,7 @@ def create_app() -> Flask:
             download_client_summary=_download_client_summary_from_query(),
             display_summary=_display_summary_from_query(),
             torrent_summary=_torrent_preferences_summary_from_query(),
+            recovery_summary=_recovery_summary_from_query(),
             import_summary=_import_summary_from_query(),
             root_folder_missing=True,
             settings=_empty_settings_model(),
@@ -491,6 +493,7 @@ def create_app() -> Flask:
             download_client_summary=_download_client_summary_from_query(),
             display_summary=_display_summary_from_query(),
             torrent_summary=_torrent_preferences_summary_from_query(),
+            recovery_summary=_recovery_summary_from_query(),
             import_summary=_import_summary_from_query(),
             root_folder_missing=root_folder_missing(),
             settings=user_settings(),
@@ -602,6 +605,12 @@ def create_app() -> Flask:
     @app.get("/settings/status")
     def settings_status():
         return jsonify(missing_settings_summary())
+
+
+    @app.post("/settings/recovery/hard-reset")
+    def hard_reset_stale_application_state_route():
+        success, message = hard_reset_stale_application_state(request.form.get("confirmation", ""))
+        return redirect(url_for("settings", recovery_saved="1" if success else "0", recovery_message=message))
 
     @app.post("/settings/display")
     def update_display_settings():
@@ -721,6 +730,13 @@ def _empty_dashboard_model() -> dict[str, object]:
         'counts': {'attention': 0, 'active': 0, 'manual': 0, 'metadata': 0, 'blocked': 0},
     }
 
+
+
+def _recovery_summary_from_query() -> dict[str, object] | None:
+    message = str(request.args.get("recovery_message") or "").strip()
+    if not message:
+        return None
+    return {"ok": request.args.get("recovery_saved") == "1", "message": message}
 
 def _empty_sidebar_counts() -> dict[str, int]:
     return {

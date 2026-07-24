@@ -1018,3 +1018,7 @@ def _unique_values(values: list[Any]) -> list[str]:
             seen.add(key)
             unique.append(text)
     return unique
+
+
+def clear_runtime_caches() -> None:
+    _SEARCH_CACHE.clear()
