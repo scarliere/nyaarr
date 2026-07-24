@@ -760,7 +760,7 @@ def test_manual_selection_hides_candidates_already_in_qbittorrent_by_hash(monkey
     assert writes == [database]
 
 
-def test_sidebar_manual_selection_count_uses_visible_manual_rows(monkeypatch) -> None:
+def test_sidebar_manual_selection_count_avoids_download_client_io(monkeypatch) -> None:
     candidate = manual_candidate("candidate-1")
     database = manual_database(candidate)
     database["events"] = []
@@ -774,9 +774,10 @@ def test_sidebar_manual_selection_count_uses_visible_manual_rows(monkeypatch) ->
 
     counts = app_state.sidebar_counts()
 
-    assert counts["manual_selection"] == 0
-    assert database["anime"][0]["torrent_manual_selection"] == {"required": False}
-    assert writes == [database]
+    assert counts["manual_selection"] == 1
+    assert database["anime"][0]["torrent_manual_selection"]["required"] is True
+    assert writes == []
+    assert client.calls == []
 
 
 def test_manual_selection_hides_same_anime_episode_already_in_qbittorrent(monkeypatch) -> None:

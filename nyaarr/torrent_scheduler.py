@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-ACTIVE_STATES = {"downloading", "forcedDL", "metaDL", "queuedDL", "stalledDL"}
+ACTIVE_STATES = {"downloading", "forceddl", "metadl", "queueddl", "stalleddl"}
 SLOW_BYTES_PER_SECOND = 100 * 1024
 SLOW_GRACE_SECONDS = 2 * 60
 SLOW_WINDOW_SECONDS = 10 * 60

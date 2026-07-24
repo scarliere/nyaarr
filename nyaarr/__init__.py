@@ -40,6 +40,7 @@ from .app_state import (
     manual_selection_model,
     metadata_verification_model,
     missing_settings_summary,
+    remove_queued_subbers,
     reject_flagged_torrent,
     reject_manual_torrent,
     root_folder_missing,
@@ -51,6 +52,7 @@ from .app_state import (
     sidebar_counts,
     test_download_client,
     unblock_ignored_torrent,
+    unblock_release_group,
     update_anime_preferences,
     ui_bootstrap_model,
     verify_superadmin_login,
@@ -429,6 +431,11 @@ def create_app() -> Flask:
         success, message = hard_reset_queued_torrents(selected) if selected else hard_reset_queued_torrents()
         return redirect(url_for("activity", section="queued", reset="1" if success else "0", message=message))
 
+    @app.post("/activity/queued/remove-subber")
+    def remove_queued_subbers_route():
+        success, message = remove_queued_subbers(request.form.getlist("selection"))
+        return redirect(url_for("activity", section="queued", reset="1" if success else "0", message=message))
+
     @app.get("/add")
     def add_anime():
         query = request.args.get("q", "").strip()
@@ -712,6 +719,14 @@ def create_app() -> Flask:
     def unblock_blocked_torrent_route():
         success, message = unblock_ignored_torrent(request.form.get("ignore_key", ""))
         redirect_url = url_for("activity", section="blocked")
+        if _wants_json_response():
+            return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
+        return redirect(redirect_url)
+
+    @app.post("/torrents/blocked/unblock-subber")
+    def unblock_release_group_route():
+        success, message = unblock_release_group(request.form.get("library_id", ""), request.form.get("release_group", ""))
+        redirect_url = url_for("activity", section="blocked", reset="1" if success else "0", message=message)
         if _wants_json_response():
             return jsonify({"ok": success, "message": message, "redirect_url": redirect_url})
         return redirect(redirect_url)

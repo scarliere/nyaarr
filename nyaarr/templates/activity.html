@@ -12,8 +12,9 @@
       </div>
       {% if activity.section == 'queued' %}
         <div class="activity-reset-actions">
-          <form id="selected-hard-reset-form" action="{{ url_for('hard_reset_queued_torrents_route') }}" method="post" onsubmit="return document.querySelectorAll('input[name=selection][form=selected-hard-reset-form]:checked').length > 0 || (alert('Select at least one queued episode.'), false);">
+          <form id="queued-selection-form" action="{{ url_for('hard_reset_queued_torrents_route') }}" method="post" onsubmit="return document.querySelectorAll('input[name=selection][form=queued-selection-form]:checked').length > 0 || (alert('Select at least one queued row.'), false);">
             <button type="submit">Reset Selected</button>
+            <button class="danger" type="submit" formaction="{{ url_for('remove_queued_subbers_route') }}" onclick="return confirm('Remove the selected subber(s) for these anime? Matching active qBittorrent torrents and partial files will be deleted.');">Remove Subber</button>
           </form>
           <form action="{{ url_for('hard_reset_queued_torrents_route') }}" method="post" onsubmit="return confirm('Hard reset all pending torrent discovery? Existing torrents visible in qBittorrent will be preserved.');">
             <button class="danger" type="submit">Hard Reset All</button>
@@ -54,6 +55,7 @@
         <table class="activity-table">
           <thead>
             <tr>
+              {% if activity.section == 'queued' %}<th aria-label="Select"><input type="checkbox" data-select-all-queued aria-label="Select all queued rows"></th>{% endif %}
               <th>Anime</th>
               <th>Episode</th>
               <th>Date Added</th>
@@ -68,6 +70,9 @@
           <tbody data-activity-rows>
             {% for row in activity.rows %}
               <tr>
+                {% if activity.section == 'queued' %}
+                  <td data-label="Select"><label class="activity-select-row"><input form="queued-selection-form" type="checkbox" name="selection" value="{{ row.library_id }}|{{ row.selection_key }}" data-can-remove-subber="{{ '1' if row.can_remove_subber else '0' }}"><span>Select</span></label></td>
+                {% endif %}
                 <td data-label="Anime">
                   <div class="activity-anime-line"><strong>{{ row.anime }}</strong><span class="activity-release-title" title="{{ row.title }}">{{ row.title }}</span></div>
                 </td>
@@ -87,14 +92,13 @@
                 {% if activity.section == 'history' %}<td data-label="Date Completed">{{ row.date_completed }}</td>{% endif %}
                 {% if activity.section != 'history' %}
                   <td data-label="Action">
-                    {% if activity.section == 'queued' and row.library_id %}
-                      <label class="activity-select-row"><input form="selected-hard-reset-form" type="checkbox" name="selection" value="{{ row.library_id }}|{{ row.episode }}"><span>Select</span></label>
-                    {% endif %}
                     {% if activity.section == 'queued' and row.can_resolve and row.library_id %}
                       <div class="activity-actions">
                         <form action="{{ url_for('allow_flagged_torrent_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button type="submit">Allow</button></form>
                         <form action="{{ url_for('reject_flagged_torrent_route') }}" method="post" onsubmit="return confirm('Reject this torrent candidate?');"><input type="hidden" name="library_id" value="{{ row.library_id }}"><button class="danger" type="submit">Reject</button></form>
                       </div>
+                    {% elif activity.section == 'blocked' and row.can_unblock and row.block_type == 'release_group' %}
+                      <div class="activity-actions"><form action="{{ url_for('unblock_release_group_route') }}" method="post"><input type="hidden" name="library_id" value="{{ row.library_id }}"><input type="hidden" name="release_group" value="{{ row.release_group }}"><button type="submit">Unblock</button></form></div>
                     {% elif activity.section == 'blocked' and row.can_unblock and row.ignore_key %}
                       <div class="activity-actions">
                         <form action="{{ url_for('unblock_blocked_torrent_route') }}" method="post"><input type="hidden" name="ignore_key" value="{{ row.ignore_key }}"><button type="submit">Unblock</button></form>
@@ -106,7 +110,7 @@
             {% else %}
               {% if activity.description == 'Loading activity.' %}
                 <tr>
-                  <td colspan="{% if activity.section != 'history' %}8{% else %}7{% endif %}" class="activity-empty activity-loading-cell">
+                  <td colspan="{% if activity.section == 'queued' %}9{% elif activity.section != 'history' %}8{% else %}7{% endif %}" class="activity-empty activity-loading-cell">
                     <div class="table-loading-card" role="status" aria-live="polite">
                       <strong>Loading {{ activity.label|lower }} table</strong>
                       <span>Fetching the latest Activity rows.</span>
@@ -120,7 +124,7 @@
                 </tr>
               {% else %}
                 <tr>
-                  <td colspan="{% if activity.section != 'history' %}8{% else %}7{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
+                  <td colspan="{% if activity.section == 'queued' %}9{% elif activity.section != 'history' %}8{% else %}7{% endif %}" class="activity-empty">No {{ activity.label|lower }} torrents.</td>
                 </tr>
               {% endif %}
             {% endfor %}
@@ -145,13 +149,21 @@
         let inFlight = false;
         let lastRowsSignature = "";
         const selectedResetValues = new Set(
-          Array.from(document.querySelectorAll('input[name="selection"][form="selected-hard-reset-form"]:checked')).map((input) => input.value)
+          Array.from(document.querySelectorAll('input[name="selection"][form="queued-selection-form"]:checked')).map((input) => input.value)
         );
         rowsBody.addEventListener("change", (event) => {
-          const input = event.target.closest('input[name="selection"][form="selected-hard-reset-form"]');
+          const input = event.target.closest('input[name="selection"][form="queued-selection-form"]');
           if (!input) return;
           if (input.checked) selectedResetValues.add(input.value);
           else selectedResetValues.delete(input.value);
+        });
+        const selectAllQueued = document.querySelector("[data-select-all-queued]");
+        if (selectAllQueued) selectAllQueued.addEventListener("change", () => {
+          rowsBody.querySelectorAll('input[name="selection"][form="queued-selection-form"]').forEach((input) => {
+            input.checked = selectAllQueued.checked;
+            if (input.checked) selectedResetValues.add(input.value);
+            else selectedResetValues.delete(input.value);
+          });
         });
 
         function setText(selector, value) {
@@ -202,38 +214,46 @@
           return cell;
         }
 
+        function selectionCell(row) {
+          const cell = document.createElement("td");
+          cell.dataset.label = "Select";
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          const text = document.createElement("span");
+          const value = `${row.library_id || ""}|${row.selection_key || ""}`;
+          label.className = "activity-select-row";
+          checkbox.type = "checkbox";
+          checkbox.name = "selection";
+          checkbox.value = value;
+          checkbox.dataset.canRemoveSubber = row.can_remove_subber ? "1" : "0";
+          checkbox.setAttribute("form", "queued-selection-form");
+          checkbox.checked = selectedResetValues.has(value);
+          text.textContent = "Select";
+          label.append(checkbox, text);
+          cell.appendChild(label);
+          return cell;
+        }
+
         function actionCell(row) {
           const cell = document.createElement("td");
           cell.dataset.label = "Action";
           const wrapper = document.createElement("div");
           wrapper.className = "activity-actions";
-          if (section === "queued" && row.library_id) {
-            const label = document.createElement("label");
-            const checkbox = document.createElement("input");
-            const text = document.createElement("span");
-            label.className = "activity-select-row";
-            checkbox.type = "checkbox";
-            checkbox.name = "selection";
-            checkbox.value = `${row.library_id}|${row.episode || ""}`;
-            checkbox.setAttribute("form", "selected-hard-reset-form");
-            checkbox.checked = selectedResetValues.has(checkbox.value);
-            text.textContent = "Select";
-            label.append(checkbox, text);
-            wrapper.appendChild(label);
-          }
           if (section === "blocked") {
-            if (!row.can_unblock || !row.ignore_key) return cell;
+            if (!row.can_unblock) return cell;
             const form = document.createElement("form");
-            const input = document.createElement("input");
             const button = document.createElement("button");
             form.method = "post";
-            form.action = "/torrents/blocked/unblock";
-            input.type = "hidden";
-            input.name = "ignore_key";
-            input.value = row.ignore_key;
+            form.action = row.block_type === "release_group" ? "/torrents/blocked/unblock-subber" : "/torrents/blocked/unblock";
+            const values = row.block_type === "release_group"
+              ? {library_id: row.library_id || "", release_group: row.release_group || ""}
+              : {ignore_key: row.ignore_key || ""};
+            for (const [name, value] of Object.entries(values)) {
+              const input = document.createElement("input");
+              input.type = "hidden"; input.name = name; input.value = value; form.appendChild(input);
+            }
             button.type = "submit";
             button.textContent = "Unblock";
-            form.appendChild(input);
             form.appendChild(button);
             wrapper.appendChild(form);
             cell.appendChild(wrapper);
@@ -269,27 +289,28 @@
         }
 
         function rowKey(row) {
-          return [row.library_id || "", row.title || "", row.episode || "", row.status || ""].join("|");
+          return [row.library_id || "", row.selection_key || "", row.title || "", row.episode || "", row.status || ""].join("|");
         }
 
         function applyRow(tableRow, row) {
           tableRow.dataset.rowKey = rowKey(row);
           const cells = tableRow.children;
-          cells[0].querySelector("strong").textContent = row.anime || "Unknown";
-          cells[0].querySelector("span").textContent = row.title || "";
-          cells[0].querySelector("span").title = row.title || "";
-          cells[1].textContent = row.episode || "";
-          cells[2].textContent = row.date_added || "";
-          cells[3].textContent = row.resolution || "";
-          const statusPill = cells[4].querySelector(".activity-status-pill");
+          const offset = section === "queued" ? 1 : 0;
+          cells[offset].querySelector("strong").textContent = row.anime || "Unknown";
+          cells[offset].querySelector("span").textContent = row.title || "";
+          cells[offset].querySelector("span").title = row.title || "";
+          cells[offset + 1].textContent = row.episode || "";
+          cells[offset + 2].textContent = row.date_added || "";
+          cells[offset + 3].textContent = row.resolution || "";
+          const statusPill = cells[offset + 4].querySelector(".activity-status-pill");
           statusPill.textContent = row.status_label || "Unknown";
           statusPill.className = `activity-status-pill ${row.status_tone || "wanted"}`;
-          let progressCellIndex = 6;
+          let progressCellIndex = offset + 6;
           if (section === "history") {
             progressCellIndex = 5;
             cells[6].textContent = row.date_completed || "";
           } else {
-            cells[5].textContent = row.time_left || "";
+            cells[offset + 5].textContent = row.time_left || "";
           }
           const progress = Math.max(0, Math.min(Math.round(Number(row.progress || 0)), 100));
           const progressBar = cells[progressCellIndex].querySelector(".activity-progress");
@@ -303,6 +324,7 @@
         function buildRow(row) {
           const tableRow = document.createElement("tr");
           tableRow.dataset.rowKey = rowKey(row);
+          if (section === "queued") tableRow.appendChild(selectionCell(row));
           tableRow.appendChild(animeCell(row));
           tableRow.appendChild(textCell(row.episode, "Episode"));
           tableRow.appendChild(textCell(row.date_added, "Date Added"));
@@ -331,7 +353,7 @@
             if (existingEmpty) return;
             const tableRow = document.createElement("tr");
             const cell = document.createElement("td");
-            cell.colSpan = section !== "history" ? 8 : 7;
+            cell.colSpan = section === "queued" ? 9 : (section !== "history" ? 8 : 7);
             cell.className = "activity-empty";
             cell.textContent = `No ${(label || "queued").toLowerCase()} torrents.`;
             tableRow.appendChild(cell);

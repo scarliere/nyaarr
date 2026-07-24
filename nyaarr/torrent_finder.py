@@ -25,6 +25,7 @@ NYAA_RSS_CACHE_TTL_SECONDS = int(os.environ.get("NYAARR_NYAA_RSS_CACHE_TTL_SECON
 NYAA_RSS_CACHE_MAX_ENTRIES = max(0, int(os.environ.get("NYAARR_NYAA_RSS_CACHE_MAX_ENTRIES", "256")))
 NYAA_MAX_EPISODE_SEARCH_QUERIES = max(0, int(os.environ.get("NYAARR_NYAA_MAX_EPISODE_SEARCH_QUERIES", "72")))
 LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD = int(os.environ.get("NYAARR_LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD", "6"))
+LONG_SERIES_EPISODE_THRESHOLD = int(os.environ.get("NYAARR_LONG_SERIES_EPISODE_THRESHOLD", "30"))
 _RSS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _RSS_CACHE_LOCK = threading.Lock()
 _RSS_INFLIGHT: dict[str, concurrent.futures.Future[list[dict[str, Any]]]] = {}
@@ -156,7 +157,8 @@ def find_torrents_for_anime(anime: dict[str, Any], preferred_subbers: list[str] 
                 notices.append(f"Loaded {added_batch_count} upfront batch RSS candidate(s) before episode search.")
             if ongoing:
                 related_releases = _verify_batch_releases(related_releases, missing_episodes, notices)
-        if not _has_compatible_batch_candidate(anime, related_releases):
+        prefer_episodes_for_ongoing_long_series = _is_long_series(anime) and ongoing
+        if prefer_episodes_for_ongoing_long_series or not _has_compatible_batch_candidate(anime, related_releases):
             before_count = len(related_releases)
             related_releases = _load_episode_search_releases(
                 matched_search_title,
@@ -657,9 +659,18 @@ def _should_try_large_backlog_batch_search(
     releases: list[dict[str, Any]],
     missing_episodes: set[int],
 ) -> bool:
-    if len(missing_episodes) < LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD:
+    if _is_long_series(anime):
+        if _is_ongoing_anime(anime):
+            return False
+    elif len(missing_episodes) < LARGE_BACKLOG_BATCH_SEARCH_THRESHOLD:
         return False
     return not _has_compatible_batch_candidate(anime, releases)
+
+
+def _is_long_series(anime: dict[str, Any]) -> bool:
+    completion = anime.get("completion") if isinstance(anime.get("completion"), dict) else {}
+    expected = _positive_int(completion.get("expected_episodes")) or _positive_int(anime.get("episodes"))
+    return expected is not None and expected > LONG_SERIES_EPISODE_THRESHOLD
 
 
 def _has_compatible_batch_candidate(anime: dict[str, Any], releases: list[dict[str, Any]]) -> bool:
@@ -774,7 +785,8 @@ def _select_candidates(
     batch_releases = [release for release in useful_releases if release["release_kind"] == "batch"]
     if _is_ongoing_anime(anime):
         batch_releases = [release for release in batch_releases if _batch_is_verified(release)]
-    if local_episode_count == 0 and batch_releases:
+    prefer_episodes_for_ongoing_long_series = _is_long_series(anime) and _is_ongoing_anime(anime)
+    if local_episode_count == 0 and batch_releases and not prefer_episodes_for_ongoing_long_series:
         preferred_group = _preferred_group(batch_releases, group_preferences)
         return _sort_releases(
             [release for release in batch_releases if release["release_group"] == preferred_group]

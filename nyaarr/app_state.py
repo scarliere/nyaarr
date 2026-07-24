@@ -654,6 +654,26 @@ def _reconcile_library_storage_and_missing_torrents(database: dict[str, Any]) ->
         root = Path(root_text) if root_text else None
         if root is None or not root.exists() or not root.is_dir():
             continue
+        if _has_resolved_anilist_identity(anime) and root.name != _canonical_anilist_folder_name(anime):
+            canonical_root = root.parent / _canonical_anilist_folder_name(anime)
+            source_files = _media_files(root)
+            destinations = [(source, canonical_root / source.name) for source in source_files]
+            conflict = any(
+                destination.exists() and _media_file_fingerprint(source) != _media_file_fingerprint(destination)
+                for source, destination in destinations
+            )
+            if not conflict and destinations:
+                repair_state: dict[str, Any] = {}
+                staged = [
+                    destination
+                    for source, destination in destinations
+                    if _stage_imported_media_file(source, destination, repair_state)
+                ]
+                if len(staged) == len(destinations):
+                    anime["local_path"] = str(canonical_root.resolve())
+                    anime["episode_files"] = sorted((str(path.resolve()) for path in staged), key=str.casefold)
+                    root = canonical_root
+                    budget -= 1
         # Discovery is read-only. Nested torrent content and directories remain
         # untouched so qBittorrent can continue to own and seed their paths.
         anime["episode_files"] = sorted((str(path.resolve()) for path in _media_files(root)), key=str.casefold)
@@ -741,7 +761,9 @@ def _refresh_torrent_search(anime: dict[str, Any], database: dict[str, Any] | No
         _record_event(database, "nyaa", f"Refreshed Nyaa search for {query}; {candidate_count} usable candidate(s) available.", anime)
 
 
-def _filter_ignored_torrent_candidates(database: dict[str, Any], candidates: list[Any]) -> list[dict[str, Any]]:
+def _filter_ignored_torrent_candidates(
+    database: dict[str, Any], candidates: list[Any], anime: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     ignored_keys = _ignored_torrent_keys(database)
     return [
         candidate
@@ -749,6 +771,7 @@ def _filter_ignored_torrent_candidates(database: dict[str, Any], candidates: lis
         if isinstance(candidate, dict)
         and not _is_dub_release(candidate)
         and _torrent_ignore_key(candidate) not in ignored_keys
+        and not _release_group_is_blocked(anime or {}, _candidate_release_group(candidate))
     ]
 
 
@@ -796,7 +819,7 @@ def _normalize_unusable_torrent_candidates(database: dict[str, Any], anime: dict
             return True
         return False
 
-    candidates = _filter_ignored_torrent_candidates(database, raw_candidates)
+    candidates = _filter_ignored_torrent_candidates(database, raw_candidates, anime)
     if len(candidates) == len(raw_candidates):
         return False
 
@@ -873,7 +896,7 @@ def _should_attempt_periodic_dispatch(database: dict[str, Any], anime: dict[str,
         return False
     torrent_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
     candidates = torrent_search.get("candidates") if isinstance(torrent_search.get("candidates"), list) else []
-    return bool(_filter_ignored_torrent_candidates(database, candidates))
+    return bool(_filter_ignored_torrent_candidates(database, candidates, anime))
 
 
 def _should_repair_poster(anime: dict[str, Any], now: float) -> bool:
@@ -1811,6 +1834,116 @@ def unblock_ignored_torrent(ignore_key: str) -> tuple[bool, str]:
     _write_user_database(database)
     return True, "Torrent candidate unblocked. It can be considered by future searches."
 
+
+def unblock_release_group(library_id: str, release_group: str) -> tuple[bool, str]:
+    database = _read_user_database()
+    anime = _find_database_anime(database, library_id)
+    if anime is None:
+        return False, "Anime was not found."
+    normalized = str(release_group or "").strip().casefold()
+    records = anime.get("blocked_release_groups")
+    if not normalized or not isinstance(records, list):
+        return False, "Blocked subber was not found."
+    kept = [
+        record for record in records
+        if str((record.get("normalized_group") or record.get("release_group")) if isinstance(record, dict) else record).strip().casefold() != normalized
+    ]
+    if len(kept) == len(records):
+        return False, "Blocked subber was not found."
+    anime["blocked_release_groups"] = kept
+    _mark_torrent_search_pending(anime)
+    anime.get("torrent_search", {}).pop("checked_at", None)
+    _record_event(database, "torrent", f"Unblocked subber {release_group} for {anime.get('title', 'anime')}.", anime)
+    _write_user_database(database)
+    from .maintenance import enqueue_job
+    enqueue_job("external_refresh", idempotency_key=f"unblock-subber:{library_id}:{normalized}:{time.time_ns()}", priority=100)
+    return True, f"Unblocked {release_group} for {anime.get('title', 'anime')}."
+
+
+def remove_queued_subbers(selections: list[str]) -> tuple[bool, str]:
+    database = _read_user_database()
+    rows_by_key = {
+        f"{row.get('library_id', '')}|{row.get('selection_key', '')}": row
+        for row in _activity_queued_rows(database, settings=database.get("settings", {}))
+        if row.get("library_id") and row.get("selection_key")
+    }
+    selected_rows = [rows_by_key[value] for value in dict.fromkeys(str(item) for item in selections) if value in rows_by_key]
+    targets: dict[str, set[str]] = {}
+    skipped = 0
+    for row in selected_rows:
+        group = str(row.get("release_group") or "").strip()
+        if not row.get("can_remove_subber") or group in {"", "Unknown", "Manual"}:
+            skipped += 1
+            continue
+        targets.setdefault(str(row.get("library_id") or ""), set()).add(group)
+    if not targets:
+        return False, "Select at least one queued torrent with a detected subber."
+
+    try:
+        client = client_from_settings(database["settings"], timeout=DOWNLOAD_CLIENT_TIMEOUT_SECONDS)
+    except QBittorrentError:
+        client = None
+    blocked_count = 0
+    removed_count = 0
+    failures = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for library_id, groups in targets.items():
+        anime = _find_database_anime(database, library_id)
+        if anime is None:
+            continue
+        records = anime.setdefault("blocked_release_groups", [])
+        if not isinstance(records, list):
+            records = []
+            anime["blocked_release_groups"] = records
+        existing = _blocked_release_group_names(anime)
+        for group in groups:
+            normalized = group.casefold()
+            if normalized not in existing:
+                records.append({"release_group": group, "normalized_group": normalized, "blocked_at": now, "source": "activity_queue"})
+                existing.add(normalized)
+                blocked_count += 1
+        lock = anime.get("release_group_lock")
+        if isinstance(lock, dict) and str(lock.get("release_group") or "").casefold() in existing:
+            anime.pop("release_group_lock", None)
+        torrent_search = anime.get("torrent_search") if isinstance(anime.get("torrent_search"), dict) else {}
+        candidates = torrent_search.get("candidates") if isinstance(torrent_search.get("candidates"), list) else []
+        torrent_search["candidates"] = [candidate for candidate in candidates if not _release_group_is_blocked(anime, _candidate_release_group(candidate))]
+        torrent_search.pop("checked_at", None)
+        anime.pop("torrent_dispatch_attempted_at", None)
+        anime.pop("torrent_dispatch_backlog", None)
+        for queue in _download_queue_items(anime):
+            if not _release_group_is_blocked(anime, _queue_release_group(queue)):
+                continue
+            if queue.get("status") not in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}:
+                continue
+            torrent_hash = str(queue.get("hash") or "").strip()
+            try:
+                if torrent_hash and client is not None:
+                    client.delete(torrent_hash, delete_files=True)
+                elif torrent_hash:
+                    raise QBittorrentError("qBittorrent is unavailable")
+            except QBittorrentError as exc:
+                queue["status"] = "error"
+                queue["subber_removal_pending"] = True
+                queue["message"] = f"Subber is blocked, but qBittorrent cleanup failed: {exc}"
+                failures += 1
+                continue
+            queue["status"] = "rejected"
+            queue["rejected_at"] = now
+            queue["message"] = f"Removed because subber {_queue_release_group(queue)} is blocked for this anime."
+            removed_count += 1
+        _sync_primary_download_queue(anime)
+        _record_event(database, "torrent", f"Blocked subber(s) {', '.join(sorted(groups))} for {anime.get('title', 'anime')}.", anime)
+    _write_user_database(database)
+    from .maintenance import enqueue_job
+    enqueue_job("external_refresh", idempotency_key=f"remove-subber:{time.time_ns()}", priority=100)
+    message = f"Blocked {blocked_count} anime/subber rule(s) and removed {removed_count} active torrent(s)."
+    if failures:
+        message += f" {failures} qBittorrent cleanup(s) will require retry."
+    if skipped:
+        message += f" Skipped {skipped} row(s) without a detected subber."
+    return True, message
+
 def save_display_settings(form: dict[str, Any]) -> tuple[bool, str]:
     selected = _settings_timezone_value(form.get("timezone") if isinstance(form, dict) else None)
     database = _read_user_database()
@@ -2165,13 +2298,16 @@ def sidebar_counts(database: dict[str, Any] | None = None) -> dict[str, int]:
         for anime in library
         if not anime.get("torrent_search", {}).get("candidates", [])
     )
-    manual_items, manual_changed = _manual_selection_items(database)
-    if manual_changed:
-        _write_user_database(database)
+    manual_count = sum(
+        1
+        for anime in library
+        if isinstance(anime.get("torrent_manual_selection"), dict)
+        and anime["torrent_manual_selection"].get("required")
+    )
     return {
         "anime": len(library),
         "activity": _queued_activity_count(library),
-        "manual_selection": len(manual_items),
+        "manual_selection": manual_count,
         "metadata_verification": _metadata_verification_count(library),
         "wanted": wanted_count,
         "settings_missing": missing_settings_summary(database)["count"],
@@ -2198,10 +2334,17 @@ def _resolve_anime_issues(database: dict[str, Any], anime: dict[str, Any]) -> No
 def activity_model(section: str) -> dict[str, Any]:
     database = _read_user_database()
     selected = section if section in {"queued", "history", "blocked"} else "queued"
-    rows = {
-        "queued": _activity_queued_rows(database),
-        "history": _activity_history_rows(database),
-        "blocked": _activity_blocked_rows(database),
+    settings = database.get("settings") if isinstance(database.get("settings"), dict) else {}
+    builders = {
+        "queued": _activity_queued_rows,
+        "history": _activity_history_rows,
+        "blocked": _activity_blocked_rows,
+    }
+    selected_rows = builders[selected](database, settings=settings)
+    counts = {
+        "queued": len(selected_rows) if selected == "queued" else _activity_queued_row_count(database),
+        "history": len(selected_rows) if selected == "history" else _activity_history_row_count(database),
+        "blocked": len(selected_rows) if selected == "blocked" else _activity_blocked_row_count(database),
     }
     labels = {"queued": "Queued", "history": "History", "blocked": "Blocked"}
     descriptions = {
@@ -2209,7 +2352,6 @@ def activity_model(section: str) -> dict[str, Any]:
         "history": "Nyaarr torrents that reached completion or were imported.",
         "blocked": "Rejected flagged torrents kept out of future candidate selection.",
     }
-    selected_rows = rows[selected]
     page_size = 200
     return {
         "section": selected,
@@ -2218,7 +2360,7 @@ def activity_model(section: str) -> dict[str, Any]:
         "rows": selected_rows[:page_size],
         "total_rows": len(selected_rows),
         "has_more": len(selected_rows) > page_size,
-        "counts": {key: len(value) for key, value in rows.items()},
+        "counts": counts,
     }
 
 
@@ -2244,7 +2386,7 @@ def hard_reset_queued_torrents(selections: list[str] | None = None) -> tuple[boo
         library_id = str(anime.get("library_id") or "")
         if selected_mode and library_id not in selected_rows:
             continue
-        selected_episode_labels = selected_rows.get(library_id, set())
+        selected_keys = selected_rows.get(library_id, set())
         client_episodes = episodes_by_library_id.get(library_id, set())
         retained = []
         removed = []
@@ -2252,7 +2394,8 @@ def hard_reset_queued_torrents(selections: list[str] | None = None) -> tuple[boo
             status = str(queue.get("status") or "")
             episode = _int_value(queue.get("episode"))
             visible = _queue_identity(queue) in client_keys or (episode is not None and episode in client_episodes)
-            selected_queue = not selected_mode or _activity_episode_label(queue) in selected_episode_labels
+            queue_key = _torrent_ignore_key(queue) or f"queue:{_activity_episode_label(queue)}"
+            selected_queue = not selected_mode or queue_key in selected_keys or "batch" in selected_keys or f"episode:{episode}" in selected_keys
             if not selected_queue or status in {"completed", "imported", "rejected", "superseded"} or visible:
                 retained.append(queue)
             else:
@@ -3003,7 +3146,12 @@ def _manual_candidate_row(candidate: dict[str, Any]) -> dict[str, Any]:
         "confidence_reasons": candidate.get("confidence_reasons") if isinstance(candidate.get("confidence_reasons"), list) else [],
     }
 
-def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: bool = False) -> list[dict[str, Any]]:
+def _activity_queued_rows(
+    database: dict[str, Any],
+    *,
+    include_client_snapshot: bool = False,
+    settings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     rows = []
     client_snapshot = _download_client_existing_snapshot(database) if include_client_snapshot else {"keys": set(), "episodes_by_library_id": {}}
     for anime in database.get("anime", []):
@@ -3022,14 +3170,17 @@ def _activity_queued_rows(database: dict[str, Any], *, include_client_snapshot: 
             if episode is not None:
                 active_episodes.add(episode)
             active_episodes.update(_queue_wanted_episode_numbers(queue))
-            rows.append(_activity_row(anime, queue, include_completed=False))
-        for episode in _missing_episode_numbers(anime):
-            if episode not in active_episodes:
+            rows.append(_activity_row(anime, queue, include_completed=False, settings=settings))
+        unresolved = [episode for episode in _missing_episode_numbers(anime) if episode not in active_episodes]
+        if unresolved and _finished_long_series(anime):
+            rows.append(_activity_long_series_batch_row(anime, unresolved))
+        else:
+            for episode in unresolved:
                 rows.append(_activity_missing_episode_row(anime, episode, _resolved_episode_candidate(database, anime, episode)))
     return sorted(rows, key=lambda row: (row["sort_date"], row["anime"], row["episode"]), reverse=True)
 
 
-def _activity_history_rows(database: dict[str, Any]) -> list[dict[str, Any]]:
+def _activity_history_rows(database: dict[str, Any], *, settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     rows = []
     for anime in database.get("anime", []):
         if not isinstance(anime, dict):
@@ -3037,14 +3188,13 @@ def _activity_history_rows(database: dict[str, Any]) -> list[dict[str, Any]]:
         for queue in _download_queue_items(anime):
             if queue.get("status") not in {"completed", "imported"}:
                 continue
-            rows.append(_activity_row(anime, queue, include_completed=True))
+            rows.append(_activity_row(anime, queue, include_completed=True, settings=settings))
     return sorted(rows, key=lambda row: row["sort_completed"] or row["sort_date"], reverse=True)
 
 
-def _activity_blocked_rows(database: dict[str, Any]) -> list[dict[str, Any]]:
+def _activity_blocked_rows(database: dict[str, Any], *, settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     ignored = database.get("ignored_torrents")
-    if not isinstance(ignored, list):
-        return []
+    ignored = ignored if isinstance(ignored, list) else []
     anime_by_id = {
         str(anime.get("library_id") or ""): anime
         for anime in database.get("anime", [])
@@ -3055,8 +3205,70 @@ def _activity_blocked_rows(database: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         anime = anime_by_id.get(str(item.get("anime_library_id") or ""), {})
-        rows.append(_activity_row(anime, item, include_completed=False, blocked=True))
+        rows.append(_activity_row(anime, item, include_completed=False, blocked=True, settings=settings))
+    for anime in database.get("anime", []):
+        if not isinstance(anime, dict):
+            continue
+        records = anime.get("blocked_release_groups")
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            group = str(record.get("release_group") or "").strip()
+            if not group:
+                continue
+            blocked_at = str(record.get("blocked_at") or "")
+            rows.append({
+                "anime": str(anime.get("title") or anime.get("original_title") or "Unknown"),
+                "episode": "All future releases", "date_added": _display_datetime_label(blocked_at, settings),
+                "sort_date": blocked_at, "resolution": _activity_resolution_label(anime, {}),
+                "time_left": "Subber blocked for this anime", "progress": 0, "date_completed": "", "sort_completed": "",
+                "title": group, "status": "blocked_subber", "status_label": "Subber blocked", "status_tone": "error",
+                "library_id": str(anime.get("library_id") or ""), "can_resolve": False, "can_unblock": True,
+                "ignore_key": "", "block_type": "release_group", "release_group": group,
+            })
     return sorted(rows, key=lambda row: row["sort_date"], reverse=True)
+
+
+def _activity_queued_row_count(database: dict[str, Any]) -> int:
+    count = 0
+    for anime in database.get("anime", []):
+        if not isinstance(anime, dict) or anime.get("monitored") is False:
+            continue
+        active_episodes: set[int] = set()
+        for queue in _download_queue_items(anime):
+            if queue.get("status") not in {"submitted", "queued", "downloading", "paused", "stalled", "error", "pending_safety", "flagged"}:
+                continue
+            if _queue_episode_is_local(anime, queue):
+                continue
+            count += 1
+            episode = _int_value(queue.get("episode"))
+            if episode is not None:
+                active_episodes.add(episode)
+            active_episodes.update(_queue_wanted_episode_numbers(queue))
+        unresolved_count = sum(1 for episode in _missing_episode_numbers(anime) if episode not in active_episodes)
+        count += 1 if unresolved_count and _finished_long_series(anime) else unresolved_count
+    return count
+
+
+def _activity_history_row_count(database: dict[str, Any]) -> int:
+    return sum(
+        1
+        for anime in database.get("anime", [])
+        if isinstance(anime, dict)
+        for queue in _download_queue_items(anime)
+        if queue.get("status") in {"completed", "imported"}
+    )
+
+
+def _activity_blocked_row_count(database: dict[str, Any]) -> int:
+    ignored = database.get("ignored_torrents")
+    ignored_count = sum(1 for item in ignored if isinstance(item, dict)) if isinstance(ignored, list) else 0
+    group_count = sum(
+        1 for anime in database.get("anime", []) if isinstance(anime, dict)
+        for record in (anime.get("blocked_release_groups") if isinstance(anime.get("blocked_release_groups"), list) else [])
+        if isinstance(record, dict) and str(record.get("release_group") or "").strip()
+    )
+    return ignored_count + group_count
 
 
 def _resolved_episode_candidate(database: dict[str, Any], anime: dict[str, Any], episode: int) -> dict[str, Any] | None:
@@ -3064,7 +3276,7 @@ def _resolved_episode_candidate(database: dict[str, Any], anime: dict[str, Any],
     candidates = torrent_search.get("candidates") if isinstance(torrent_search.get("candidates"), list) else []
     usable = [
         candidate
-        for candidate in _filter_ignored_torrent_candidates(database, candidates)
+        for candidate in _filter_ignored_torrent_candidates(database, candidates, anime)
         if candidate.get("torrent_url")
         and candidate.get("release_kind") == "episode"
         and _int_value(candidate.get("episode")) == episode
@@ -3078,6 +3290,8 @@ def _activity_missing_episode_row(
     anime: dict[str, Any], episode: int, candidate: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     resolved = isinstance(candidate, dict)
+    release_group = _candidate_release_group(candidate) if resolved else ""
+    selection_key = _torrent_ignore_key(candidate) if resolved else f"episode:{episode}"
     return {
         "anime": str(anime.get("title") or anime.get("original_title") or "Unknown"),
         "episode": str(episode),
@@ -3096,27 +3310,64 @@ def _activity_missing_episode_row(
         "can_resolve": False,
     }
 
+
+def _finished_long_series(anime: dict[str, Any]) -> bool:
+    return torrent_finder_module._is_long_series(anime) and not torrent_finder_module._is_ongoing_anime(anime)
+
+
+def _activity_long_series_batch_row(anime: dict[str, Any], episodes: list[int]) -> dict[str, Any]:
+    count = len(episodes)
+    return {
+        "anime": str(anime.get("title") or anime.get("original_title") or "Unknown"),
+        "episode": f"Batch · {count} episodes",
+        "date_added": "Wanted",
+        "sort_date": "",
+        "resolution": _activity_resolution_label(anime, {}),
+        "time_left": "Waiting for compatible batch",
+        "progress": 0,
+        "date_completed": "",
+        "sort_completed": "",
+        "title": "Batch discovery pending",
+        "status": "wanted_batch",
+        "status_label": "Waiting for batch",
+        "status_tone": "wanted",
+        "library_id": str(anime.get("library_id") or ""),
+        "can_resolve": False,
+        "row_kind": "resolved_candidate" if resolved else "wanted_episode",
+        "selection_key": selection_key,
+        "release_group": release_group,
+        "can_remove_subber": release_group not in {"", "Unknown", "Manual"},
+        "row_kind": "long_series_batch",
+        "missing_episode_count": count,
+        "selection_key": "batch",
+        "release_group": "",
+        "can_remove_subber": False,
+    }
+
 def _activity_row(
     anime: dict[str, Any],
     torrent: dict[str, Any],
     *,
     include_completed: bool,
     blocked: bool = False,
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     progress = _activity_progress(torrent)
     added_value = torrent.get("queued_at") or torrent.get("ignored_at") or torrent.get("rejected_at") or ""
     completed_value = torrent.get("completed_at") or ""
     status = str(torrent.get("status") or ("blocked" if blocked else ""))
     status_label, status_tone = _activity_status_pill(status)
+    release_group = _queue_release_group(torrent)
+    selection_key = _torrent_ignore_key(torrent) or f"queue:{_activity_episode_label(torrent)}"
     return {
         "anime": str(torrent.get("anime_title") or anime.get("title") or anime.get("original_title") or "Unknown"),
         "episode": _activity_episode_label(torrent),
-        "date_added": _display_datetime_label(added_value),
+        "date_added": _display_datetime_label(added_value, settings),
         "sort_date": str(added_value),
         "resolution": _activity_resolution_label(anime, torrent),
         "time_left": _activity_time_left(torrent),
         "progress": progress,
-        "date_completed": _display_datetime_label(completed_value) if include_completed else "",
+        "date_completed": _display_datetime_label(completed_value, settings) if include_completed else "",
         "sort_completed": str(completed_value),
         "title": str(torrent.get("title") or ""),
         "status": status,
@@ -3126,6 +3377,11 @@ def _activity_row(
         "can_resolve": not blocked and torrent.get("status") == "flagged",
         "can_unblock": blocked and bool(torrent.get("key")),
         "ignore_key": str(torrent.get("key") or ""),
+        "row_kind": "blocked_torrent" if blocked else "queue",
+        "selection_key": selection_key,
+        "release_group": release_group,
+        "can_remove_subber": not blocked and release_group not in {"", "Unknown", "Manual"},
+        "block_type": "torrent" if blocked else "",
     }
 
 
@@ -3292,15 +3548,17 @@ def _maybe_dispatch_torrent(database: dict[str, Any], anime: dict[str, Any], for
             if release.get("release_kind") == "episode" and episode in queued_episodes:
                 continue
             dispatch_save_path = _dispatch_save_path(anime, release, root_folder)
-            add_visible = client.add_url(
-                torrent_url,
-                save_path=dispatch_save_path,
-                category=category,
-                tags=tags,
-                paused=True,
-                root_folder=release.get("release_kind") != "episode",
-                expected_infohash=str(release.get("infohash") or ""),
-            )
+            add_options: dict[str, Any] = {
+                "save_path": dispatch_save_path,
+                "category": category,
+                "tags": tags,
+                "paused": True,
+                "root_folder": release.get("release_kind") != "episode",
+                "expected_infohash": str(release.get("infohash") or ""),
+            }
+            if release.get("release_kind") != "episode" and _has_resolved_anilist_identity(anime):
+                add_options["rename"] = _canonical_anilist_folder_name(anime)
+            add_visible = client.add_url(torrent_url, **add_options)
             if not str(release.get("infohash") or "").strip():
                 discovered_hash = _new_client_hash(client, category, known_client_hashes)
                 if discovered_hash:
@@ -3476,8 +3734,11 @@ def _queue_wanted_episode_numbers(queue: dict[str, Any]) -> set[int]:
 
 def _dispatch_save_path(anime: dict[str, Any], release: dict[str, Any], root_folder: str) -> str:
     local_path = _existing_anime_local_path(anime)
-    if release.get("release_kind") == "episode" and local_path:
-        return local_path
+    if release.get("release_kind") == "episode":
+        if local_path:
+            return local_path
+        if _has_resolved_anilist_identity(anime):
+            return str(Path(root_folder) / _canonical_anilist_folder_name(anime))
     return root_folder
 
 
@@ -3489,6 +3750,14 @@ def _target_folder_name(anime: dict[str, Any]) -> str:
     local_path = _existing_anime_local_path(anime)
     if local_path:
         return Path(local_path).name
+    return _safe_folder_name(str(anime.get("title") or anime.get("original_title") or "Anime"))
+
+
+def _has_resolved_anilist_identity(anime: dict[str, Any]) -> bool:
+    return bool(_provider_id_value(anime, "anilist"))
+
+
+def _canonical_anilist_folder_name(anime: dict[str, Any]) -> str:
     return _safe_folder_name(str(anime.get("title") or anime.get("original_title") or "Anime"))
 
 
@@ -3577,6 +3846,27 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
             _sync_primary_download_queue(anime)
         return True
     torrents_by_hash = {str(torrent.get("hash") or "").casefold(): torrent for torrent in torrents}
+    tracked_hashes = {
+        str(queue.get("hash") or "").casefold()
+        for _anime, queue in queued_items
+        if str(queue.get("hash") or "").strip()
+    }
+    issues = database.setdefault("issues", [])
+    for torrent_hash, torrent in torrents_by_hash.items():
+        state = str(torrent.get("state") or "").casefold()
+        if torrent_hash in tracked_hashes or not state.startswith(("paused", "stopped")) or float(torrent.get("progress") or 0) >= 1:
+            continue
+        issue_key = f"untracked-stopped-torrent:{torrent_hash}"
+        if not any(isinstance(issue, dict) and issue.get("issue_key") == issue_key and issue.get("status") == "open" for issue in issues):
+            issues.append({
+                "issue_key": issue_key,
+                "status": "open",
+                "severity": "warning",
+                "title": "Untracked stopped torrent needs review",
+                "message": f"{torrent.get('name') or torrent_hash} is stopped in qBittorrent but is not linked to a Nyaarr queue. It was not resumed automatically.",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            changed = True
     cleaned_anime_ids: set[str] = set()
     for anime, _queue in queued_items:
         anime_key = str(id(anime))
@@ -3621,6 +3911,22 @@ def _refresh_download_queue(database: dict[str, Any]) -> bool:
 
         if was_missing and _torrent_ignore_key(queue) not in _ignored_torrent_keys(database):
             queue["unblocked_retry"] = True
+
+        if _release_group_is_blocked(anime, _queue_release_group(queue)):
+            try:
+                client.delete(torrent_hash, delete_files=True)
+            except QBittorrentError as exc:
+                queue["status"] = "error"
+                queue["subber_removal_pending"] = True
+                queue["message"] = f"Blocked subber cleanup will be retried: {exc}"
+            else:
+                queue["status"] = "rejected"
+                queue["subber_removal_pending"] = False
+                queue["rejected_at"] = datetime.now(timezone.utc).isoformat()
+                queue["message"] = "Removed torrent and payload because its subber is blocked for this anime."
+            changed = True
+            _sync_primary_download_queue(anime)
+            continue
 
         if _queue_uses_wrong_release_group(anime, queue):
             _delete_wrong_release_group_queue(database, client, anime, queue, torrent_hash)
@@ -3811,7 +4117,7 @@ def _queue_needs_safety_inspection(queue: dict[str, Any], torrent: dict[str, Any
 
 
 def _resume_safe_paused_torrent(client: Any, torrent_hash: str, queue: dict[str, Any]) -> bool:
-    if queue.get("safety_status") != "safe":
+    if queue.get("safety_status") not in {"safe", "allowed"}:
         return False
     if queue.get("user_add_paused") or queue.get("scheduler_pause_reason"):
         return False
@@ -3819,11 +4125,23 @@ def _resume_safe_paused_torrent(client: Any, torrent_hash: str, queue: dict[str,
         return False
     if not torrent_hash:
         return False
+    now = datetime.now(timezone.utc)
+    retry_at = _parse_airing_datetime(queue.get("next_resume_after"))
+    if retry_at is not None and retry_at > now:
+        return False
+    attempts = int(queue.get("resume_attempts") or 0) + 1
+    queue["resume_attempts"] = attempts
+    queue["last_resume_attempt_at"] = now.isoformat()
     try:
         client.resume(torrent_hash)
     except QBittorrentError as exc:
+        delay_seconds = min(5 * (2 ** min(attempts - 1, 6)), 300)
+        queue["next_resume_after"] = (now + timedelta(seconds=delay_seconds)).isoformat()
+        queue["last_resume_error"] = str(exc)
         queue["message"] = f"Torrent passed safety inspection, but qBittorrent resume failed: {exc}"
         return True
+    queue.pop("next_resume_after", None)
+    queue.pop("last_resume_error", None)
     queue["message"] = "Torrent passed safety inspection and qBittorrent was resumed."
     return True
 
@@ -3833,6 +4151,29 @@ def _queue_release_group(queue: dict[str, Any]) -> str:
     if group:
         return group
     return release_group_from_title(str(queue.get("title") or ""))
+
+
+def _candidate_release_group(candidate: dict[str, Any]) -> str:
+    group = str(candidate.get("release_group") or "").strip()
+    return group or release_group_from_title(str(candidate.get("title") or ""))
+
+
+def _blocked_release_group_names(anime: dict[str, Any]) -> set[str]:
+    records = anime.get("blocked_release_groups")
+    if not isinstance(records, list):
+        return set()
+    names: set[str] = set()
+    for record in records:
+        value = record.get("normalized_group") or record.get("release_group") if isinstance(record, dict) else record
+        normalized = str(value or "").strip().casefold()
+        if normalized:
+            names.add(normalized)
+    return names
+
+
+def _release_group_is_blocked(anime: dict[str, Any], group: str) -> bool:
+    normalized = str(group or "").strip().casefold()
+    return bool(normalized and normalized in _blocked_release_group_names(anime))
 
 
 def _queue_uses_wrong_release_group(anime: dict[str, Any], queue: dict[str, Any]) -> bool:
@@ -3926,8 +4267,6 @@ def _import_completed_torrent(
     source_paths: list[Path] = []
     if content_path is not None and content_path.exists():
         source_paths = _media_files(content_path) if content_path.is_dir() else [content_path]
-        if _queue_imports_selected_batch_files(queue) and target_folder.exists():
-            source_paths.extend(path for path in _media_files(target_folder) if path not in source_paths)
     elif target_folder.exists():
         source_paths = _media_files(target_folder)
     if not source_paths:
@@ -3975,12 +4314,7 @@ def _import_completed_torrent(
 
 def _safe_import_destination(target_folder: Path, content_path: Path | None, source_path: Path) -> Path | None:
     relative = Path(source_path.name)
-    if content_path is not None and content_path.is_dir():
-        try:
-            relative = source_path.resolve().relative_to(content_path.resolve())
-        except (OSError, ValueError):
-            return None
-    if len(relative.parts) > 8 or any(part in {"", ".", ".."} for part in relative.parts):
+    if any(part in {"", ".", ".."} for part in relative.parts):
         return None
     destination = target_folder.joinpath(*relative.parts)
     try:
@@ -4048,7 +4382,7 @@ def _import_target_folder(anime: dict[str, Any], save_path: Path) -> Path:
     local_path = _existing_anime_local_path(anime)
     if local_path:
         return Path(local_path)
-    return save_path / _safe_folder_name(str(anime.get("title") or anime.get("original_title") or "Anime"))
+    return save_path / _canonical_anilist_folder_name(anime)
 
 
 def _normalize_completed_torrent_folder(
@@ -4147,7 +4481,7 @@ def _queue_status_from_client_state(client_state: str, progress: float) -> str:
         return "completed"
     if "error" in state or "missing" in state:
         return "error"
-    if state.startswith("paused"):
+    if state.startswith(("paused", "stopped")):
         return "paused"
     if state.startswith("stalled"):
         return "stalled"
@@ -4219,6 +4553,8 @@ def _selected_download_releases(
         if candidate.get("source_kind") == "bluray" and not allows_bluray:
             continue
         if _torrent_ignore_key(candidate) in ignored_keys:
+            continue
+        if _release_group_is_blocked(anime, _candidate_release_group(candidate)):
             continue
         if not candidate.get("torrent_url"):
             continue
@@ -4531,7 +4867,7 @@ def _set_release_group_lock_from_release(anime: dict[str, Any], release: dict[st
 
 def _set_release_group_lock(anime: dict[str, Any], group: str, source: str) -> None:
     release_group = str(group or "").strip()
-    if not release_group or release_group in {"Unknown", "Manual"}:
+    if not release_group or release_group in {"Unknown", "Manual"} or _release_group_is_blocked(anime, release_group):
         return
     existing = _locked_release_group(anime)
     if existing and existing.casefold() != release_group.casefold():
@@ -4553,17 +4889,17 @@ def _locked_release_group(anime: dict[str, Any]) -> str:
 
 def _preferred_release_group_for_anime(anime: dict[str, Any]) -> str:
     local_group = _local_release_group_preference(anime)
-    if local_group:
+    if local_group and not _release_group_is_blocked(anime, local_group):
         return local_group
     locked_group = _locked_release_group(anime)
-    if locked_group:
+    if locked_group and not _release_group_is_blocked(anime, locked_group):
         return locked_group
     groups = []
     for queue in _download_queue_items(anime):
         if queue.get("status") not in {"queued", "downloading", "paused", "stalled", "pending_safety", "completed", "imported"}:
             continue
         group = _queue_release_group(queue)
-        if group and group != "Unknown" and group != "Manual":
+        if group and group not in {"Unknown", "Manual"} and not _release_group_is_blocked(anime, group):
             groups.append(group)
     return Counter(groups).most_common(1)[0][0] if groups else ""
 
